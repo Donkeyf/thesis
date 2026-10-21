@@ -14,6 +14,7 @@
 //
 // Camera pose:  T_W_C = T_W_B(mocap) * T_B_I * inv(Kalibr T_cam_imu)
 // Kalibr's camera frame is already an optical frame (z fwd, x right, y down).
+// Mocap defaults: world Z-up; rigid body x = left, -y = nose forward, z = up.
 
 #include <algorithm>
 #include <cmath>
@@ -34,14 +35,27 @@
 #include <cv_bridge/cv_bridge.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+// message_filters switched to .hpp headers (and rclcpp::QoS subscribe) after Jazzy
+#if __has_include(<message_filters/subscriber.hpp>)
+#include <message_filters/subscriber.hpp>
+#include <message_filters/sync_policies/approximate_time.hpp>
+#include <message_filters/synchronizer.hpp>
+#define DA3_MF_RCLCPP_QOS 1
+#else
 #include <message_filters/subscriber.h>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/synchronizer.h>
+#define DA3_MF_RCLCPP_QOS 0
+#endif
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
+#if __has_include(<tf2_ros/transform_broadcaster.hpp>)
+#include <tf2_ros/transform_broadcaster.hpp>
+#else
 #include <tf2_ros/transform_broadcaster.h>
+#endif
 
 using CameraInfo = sensor_msgs::msg::CameraInfo;
 using Image = sensor_msgs::msg::Image;
@@ -116,7 +130,7 @@ public:
     const auto T_cam_imu_v =
       declare_parameter<std::vector<double>>("kalibr_T_cam_imu", identity16());
     const auto R_body_imu_v = declare_parameter<std::vector<double>>(
-      "R_body_imu", std::vector<double>{0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0});
+      "R_body_imu", std::vector<double>{0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0});
     const auto p_body_imu_v = declare_parameter<std::vector<double>>(
       "p_body_imu", std::vector<double>{0.0, 0.0, 0.0});
     mocap_time_offset_ = declare_parameter<double>("mocap_time_offset", 0.0);
@@ -143,7 +157,7 @@ public:
 
     // ---------------- Method A: floor ----------------
     const auto up_v = declare_parameter<std::vector<double>>(
-      "world_up", std::vector<double>{0.0, 1.0, 0.0});
+      "world_up", std::vector<double>{0.0, 0.0, 1.0});
     floor_height_ = declare_parameter<double>("floor_height", 0.0);
     floor_roi_frac_ = declare_parameter<double>("floor_roi_fraction", 0.5);
     floor_grid_step_ = declare_parameter<int>("floor_grid_step", 16);
@@ -219,8 +233,13 @@ public:
       pose_topic, rclcpp::SensorDataQoS(),
       std::bind(&Da3MetricScaler::onPose, this, std::placeholders::_1));
 
+#if DA3_MF_RCLCPP_QOS
+    img_sub_.subscribe(this, image_topic, rclcpp::SensorDataQoS());
+    depth_sub_.subscribe(this, depth_topic, rclcpp::SensorDataQoS());
+#else
     img_sub_.subscribe(this, image_topic, rmw_qos_profile_sensor_data);
     depth_sub_.subscribe(this, depth_topic, rmw_qos_profile_sensor_data);
+#endif
     SyncPolicy policy(sync_queue);
     policy.setMaxIntervalDuration(rclcpp::Duration::from_seconds(sync_max_dt));
     sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
@@ -934,7 +953,7 @@ private:
 
   // Geometry
   Eigen::Isometry3d T_body_cam_{Eigen::Isometry3d::Identity()};
-  Eigen::Vector3d world_up_{0, 1, 0};
+  Eigen::Vector3d world_up_{0, 0, 1};
 
   // Camera
   bool have_info_{false}, fisheye_{false};

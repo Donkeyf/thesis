@@ -3,8 +3,8 @@
 // OptiTrack (vrpn_mocap / mocap4r2 PoseStamped) -> MAVROS vision_pose -> ArduPilot
 // VISION_POSITION_ESTIMATE.
 //
-//   * Converts the mocap world frame (default Motive Y-up) to ENU, and the
-//     rigid-body frame (default z fwd, x left, y up) to FLU base_link.
+//   * Converts the mocap world frame (default Z-up, used as ENU directly) and
+//     the rigid-body frame (default x left, -y nose forward, z up) to FLU base_link.
 //     MAVROS then converts ENU/FLU -> NED/FRD itself.
 //   * Optionally shifts the published position from the rigid-body pivot to
 //     the flight controller, so VISO_POS_X/Y/Z can be left at 0.
@@ -68,16 +68,17 @@ public:
     max_jump_ = declare_parameter<double>("max_jump", 0.5);
     use_mocap_stamp_ = declare_parameter<bool>("use_mocap_stamp", false);
 
-    // World: rows = ENU axes expressed in mocap world. Default for Motive Y-up:
-    // E = x_w, N = -z_w, U = y_w.  For Motive Z-up use identity.
+    // World: rows = ENU axes expressed in mocap world. Default Z-up: identity
+    // (mocap x/y are used as E/N; heading is relative to the room, compass is off).
+    // For Motive Y-up use [1,0,0, 0,0,-1, 0,1,0].
     R_enu_w_ = mat3(
       declare_parameter<std::vector<double>>(
-        "R_enu_world", {1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 1.0, 0.0}), "R_enu_world");
+        "R_enu_world", {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}), "R_enu_world");
     // Body: columns = FLU axes expressed in rigid-body frame. Default for
-    // z = nose, x = left, y = up (same matrix as R_body_imu in the scaler).
+    // x = left, -y = nose forward, z = up (same matrix as R_body_imu in the scaler).
     R_b_flu_ = mat3(
       declare_parameter<std::vector<double>>(
-        "R_body_flu", {0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0}), "R_body_flu");
+        "R_body_flu", {0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0}), "R_body_flu");
     const auto p = declare_parameter<std::vector<double>>("p_body_fc", {0.0, 0.0, 0.0});
     if (p.size() != 3) {
       throw std::runtime_error("p_body_fc needs 3 values");

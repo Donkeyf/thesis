@@ -4,7 +4,7 @@ da3_metric_scaler:
     image_topic: /image_throttled          # the SAME image DA3 consumes (stamps must match)
     depth_topic: /depth_anything_3/depth   # DA3 wrapper output
     camera_info_topic: /camera_info
-    mocap_pose_topic: /vrpn_mocap/dilon/pose
+    mocap_pose_topic: /vrpn_mocap/dilon/pose_throttled   # topic_tools throttle @ 30 Hz
     output_depth_topic: /da3_metric/depth
     output_camera_info_topic: /da3_metric/camera_info
     stats_topic: /da3_metric/scale         # [fused_s, fused_b, floor_s, floor_n, tri_s, tri_n, edge_frac]
@@ -28,14 +28,14 @@ da3_metric_scaler:
                        0.0, 1.0, 0.0, 0.0,
                        0.0, 0.0, 1.0, 0.0,
                        0.0, 0.0, 0.0, 1.0]
-    # Rigid body "dilon" axes: z = nose fwd, x = left, y = up (Motive Y-up).
-    # Columns = IMU FLU axes expressed in body frame.
-    R_body_imu: [0.0, 1.0, 0.0,
-                 0.0, 0.0, 1.0,
-                 1.0, 0.0, 0.0]
-    p_body_imu: [0.0, 0.0, 0.0]            # FC position from rigid-body pivot, body axes (m)
+    # Rigid body "dilon" axes (as published): x = left, -y = nose forward, z = up.
+    # Columns = IMU FLU axes expressed in body frame (FC mounted square, nose forward).
+    R_body_imu: [ 0.0, 1.0, 0.0,
+                 -1.0, 0.0, 0.0,
+                  0.0, 0.0, 1.0]
+    p_body_imu: [0.0, 0.0, 0.0]            # FC from rigid-body pivot (m), body axes: +x left, -y fwd, +z up
     mocap_time_offset: 0.0                 # s, added to image stamp before pose lookup
-    max_pose_gap: 0.05                     # s, max gap between bracketing mocap samples
+    max_pose_gap: 0.1                      # s, max gap between bracketing mocap samples (30 Hz input)
 
     # ---- DA3 output model ----
     method: both                           # floor | triangulation | both
@@ -52,7 +52,7 @@ da3_metric_scaler:
     min_inlier_ratio: 0.4
 
     # ---- Method A: floor ----
-    world_up: [0.0, 1.0, 0.0]              # Motive Y-up; use [0,0,1] if you switch to Z-up
+    world_up: [0.0, 0.0, 1.0]              # mocap world is Z-up
     floor_height: 0.0                      # floor along world_up (m)
     floor_roi_fraction: 0.5                # bottom half of image
     floor_grid_step: 16                    # px

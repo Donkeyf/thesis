@@ -23,16 +23,27 @@ find_package(mavros_msgs REQUIRED)
 find_package(geographic_msgs REQUIRED)
 
 add_executable(da3_metric_scaler src/da3_metric_scaler.cpp)
-target_include_directories(da3_metric_scaler PRIVATE ${EIGEN3_INCLUDE_DIR})
-target_link_libraries(da3_metric_scaler ${OpenCV_LIBS})
-ament_target_dependencies(da3_metric_scaler
-  rclcpp sensor_msgs geometry_msgs std_msgs builtin_interfaces
-  cv_bridge message_filters tf2_ros)
+target_link_libraries(da3_metric_scaler
+  rclcpp::rclcpp
+  ${sensor_msgs_TARGETS}
+  ${geometry_msgs_TARGETS}
+  ${std_msgs_TARGETS}
+  ${builtin_interfaces_TARGETS}
+  cv_bridge::cv_bridge
+  message_filters::message_filters
+  tf2_ros::tf2_ros
+  ${OpenCV_LIBS}
+  Eigen3::Eigen)
+target_include_directories(da3_metric_scaler PRIVATE ${OpenCV_INCLUDE_DIRS})
 
 add_executable(mocap_to_mavros src/mocap_to_mavros.cpp)
-target_include_directories(mocap_to_mavros PRIVATE ${EIGEN3_INCLUDE_DIR})
-ament_target_dependencies(mocap_to_mavros
-  rclcpp geometry_msgs builtin_interfaces mavros_msgs geographic_msgs)
+target_link_libraries(mocap_to_mavros
+  rclcpp::rclcpp
+  ${geometry_msgs_TARGETS}
+  ${builtin_interfaces_TARGETS}
+  ${mavros_msgs_TARGETS}
+  ${geographic_msgs_TARGETS}
+  Eigen3::Eigen)
 
 install(TARGETS da3_metric_scaler mocap_to_mavros DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})

@@ -1,6 +1,6 @@
 # da3_metric_scale
 
-ROS 2 (Jazzy) package with two nodes:
+ROS 2 (Jazzy, Kilted, Lyrical) package with two nodes:
 
 | Node | Does |
 |---|---|
@@ -36,8 +36,8 @@ ros2 launch da3_metric_scale mocap_da3.launch.py start_vrpn:=false start_mavros_
 - `config/mocap_to_mavros.yaml` – topics, rate, `R_enu_world`, `R_body_flu`, `p_body_fc`, EKF origin
 - `config/da3_metric_scale.yaml` – paste Kalibr `cam0/T_cam_imu`, `p_body_imu`, DA3 topics, method
 
-Both configs assume Motive **Y-up** and rigid body "dilon" with z = nose, x = left, y = up.
-If you switch to Z-up: `R_enu_world` → identity, `world_up` → `[0,0,1]`, and update the body rotations.
+Both configs assume the mocap world is **Z-up** and rigid body "dilon" is published with
+x = left, −y = nose forward, z = up. Offsets (`p_body_imu`, `p_body_fc`) are in those body axes.
 
 ## ArduPilot
 
