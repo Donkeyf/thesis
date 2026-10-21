@@ -240,10 +240,13 @@ public:
     img_sub_.subscribe(this, image_topic, rmw_qos_profile_sensor_data);
     depth_sub_.subscribe(this, depth_topic, rmw_qos_profile_sensor_data);
 #endif
-    SyncPolicy policy(sync_queue);
-    policy.setMaxIntervalDuration(rclcpp::Duration::from_seconds(sync_max_dt));
+    // Pass the policy as a temporary: newer message_filters (Kilted+) also has a
+    // Synchronizer(F0&, F1&, ...) filter-only constructor that would otherwise
+    // grab a named policy as the first input. Synchronizer derives from the
+    // policy, so the interval is set on it afterwards.
     sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
-      policy, img_sub_, depth_sub_);
+      SyncPolicy(static_cast<uint32_t>(sync_queue)), img_sub_, depth_sub_);
+    sync_->setMaxIntervalDuration(rclcpp::Duration::from_seconds(sync_max_dt));
     sync_->registerCallback(
       std::bind(&Da3MetricScaler::onFrame, this, std::placeholders::_1, std::placeholders::_2));
 
