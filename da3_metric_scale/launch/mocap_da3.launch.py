@@ -10,18 +10,30 @@ Rosbag (DA3 + scaler only; start this BEFORE `ros2 bag play <bag> --clock`):
 
 Toggle parts with start_vrpn / start_throttle / start_mavros_bridge / start_da3 / start_scaler.
 The bridge and scaler read the throttled pose (raw pose if start_throttle:=false).
-DA3 defaults to the host TensorRT service (da3_use_shared_memory:=true): start that service
-first, the same way as when running the DA3 wrapper on its own.
+DA3 runs on TensorRT: this launch also starts scripts/trt_inference_service_shm.py from the
+wrapper repo (found automatically, or set da3_service_script:=<path>). start_da3_service:=false
+if you already run the service yourself.
 """
+import glob
 import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, TimerAction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+
+
+def _find_trt_service_script():
+    # GerdsenAI wrapper source: <ws>/src/**/scripts/trt_inference_service_shm.py
+    for pattern in ('/workspaces/isaac_ros-dev/src/*/scripts/trt_inference_service_shm.py',
+                    '/workspaces/isaac_ros-dev/src/*/*/scripts/trt_inference_service_shm.py'):
+        hits = sorted(glob.glob(pattern))
+        if hits:
+            return hits[0]
+    return ''
 
 
 def generate_launch_description():
@@ -69,6 +81,16 @@ def generate_launch_description():
         DeclareLaunchArgument('da3_use_shared_memory', default_value='true',
                               description='true = host TensorRT service (start it first); '
                                           'false = in-container PyTorch DA3 package'),
+        DeclareLaunchArgument('start_da3_service', default_value='true',
+                              description='Start the TensorRT inference service '
+                                          '(scripts/trt_inference_service_shm.py)'),
+        DeclareLaunchArgument('da3_service_script', default_value=_find_trt_service_script(),
+                              description='Path to trt_inference_service_shm.py'),
+        DeclareLaunchArgument('da3_engine', default_value='models/tensorrt/da3-small-fp16.engine',
+                              description='TRT engine; relative paths are from the wrapper repo'),
+        DeclareLaunchArgument('da3_service_python', default_value='python3'),
+        DeclareLaunchArgument('da3_service_startup_delay', default_value='3.0',
+                              description='s to wait after starting the service before DA3 node'),
         DeclareLaunchArgument('da3_publish_colored', default_value='true'),
         DeclareLaunchArgument('da3_log_inference_time', default_value='true'),
 
@@ -107,9 +129,27 @@ def generate_launch_description():
                         use_sim_time],
             condition=IfCondition(LaunchConfiguration('start_mavros_bridge')),
         ),
+        # TensorRT inference service (same as the wrapper's run.sh step 5).
+        # Clears stale status/IPC files so the node can't see an old "ready".
+        ExecuteProcess(
+            cmd=['bash', '-c', [
+                'mkdir -p /dev/shm/da3 /tmp/da3_shared && '
+                'rm -f /dev/shm/da3/* /tmp/da3_shared/* ; '
+                'cd "$(dirname "', LaunchConfiguration('da3_service_script'), '")/.." && '
+                'exec ', LaunchConfiguration('da3_service_python'), ' "',
+                LaunchConfiguration('da3_service_script'), '" --engine "',
+                LaunchConfiguration('da3_engine'), '"']],
+            name='da3_trt_service',
+            output='screen',
+            condition=IfCondition(PythonExpression([
+                "'", LaunchConfiguration('start_da3_service'), "'.lower() == 'true' and '",
+                LaunchConfiguration('start_da3'), "'.lower() == 'true' and '",
+                LaunchConfiguration('da3_use_shared_memory'), "'.lower() == 'true'"])),
+        ),
         # Depth Anything 3 (GerdsenAI wrapper). Copies the input image header onto
-        # the depth, which is what the scaler pairs on.
-        Node(
+        # the depth, which is what the scaler pairs on. Delayed so the TRT service
+        # has written its "ready" status first.
+        TimerAction(period=LaunchConfiguration('da3_service_startup_delay'), actions=[Node(
             package='depth_anything_3_ros2',
             executable='depth_anything_3_node',
             name=da3_name,
@@ -135,7 +175,7 @@ def generate_launch_description():
                     LaunchConfiguration('da3_use_shared_memory'), value_type=bool),
             }, use_sim_time],
             condition=IfCondition(LaunchConfiguration('start_da3')),
-        ),
+        )]),
         Node(
             package='da3_metric_scale',
             executable='da3_metric_scaler',
