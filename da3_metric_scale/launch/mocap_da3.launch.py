@@ -10,7 +10,8 @@ Rosbag (DA3 + scaler only; start this BEFORE `ros2 bag play <bag> --clock`):
 
 Toggle parts with start_vrpn / start_throttle / start_mavros_bridge / start_da3 / start_scaler.
 The bridge and scaler read the throttled pose (raw pose if start_throttle:=false).
-Run from a shell with the DA3 venv active, same as when launching DA3 on its own.
+DA3 defaults to the host TensorRT service (da3_use_shared_memory:=true): start that service
+first, the same way as when running the DA3 wrapper on its own.
 """
 import os
 
@@ -65,8 +66,9 @@ def generate_launch_description():
         DeclareLaunchArgument('da3_model', default_value='depth-anything/DA3-BASE',
                               description='DA3-SMALL / DA3-BASE / DA3-LARGE / ...'),
         DeclareLaunchArgument('da3_device', default_value='cuda'),
-        DeclareLaunchArgument('da3_use_shared_memory', default_value='false',
-                              description='true if using the host TensorRT service'),
+        DeclareLaunchArgument('da3_use_shared_memory', default_value='true',
+                              description='true = host TensorRT service (start it first); '
+                                          'false = in-container PyTorch DA3 package'),
         DeclareLaunchArgument('da3_publish_colored', default_value='true'),
         DeclareLaunchArgument('da3_log_inference_time', default_value='true'),
 
