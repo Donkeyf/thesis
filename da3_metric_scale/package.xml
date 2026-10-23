@@ -21,8 +21,12 @@
   <depend>eigen</depend>
   <depend>mavros_msgs</depend>
   <depend>geographic_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>std_srvs</depend>
   <exec_depend>topic_tools</exec_depend>
+  <exec_depend>mavros</exec_depend>
   <exec_depend>vrpn_mocap</exec_depend>
+  <exec_depend>depth_anything_3_ros2</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

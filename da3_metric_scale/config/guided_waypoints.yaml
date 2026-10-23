@@ -1,0 +1,33 @@
+guided_waypoints:
+  ros__parameters:
+    mavros_prefix: /mavros/mavros     # /mavros if your MAVROS topics are /mavros/...
+    frame_id: map
+    setpoint_rate: 20.0               # Hz setpoint stream while flying
+
+    # Waypoints in the EKF local ENU frame (= /mavros/mavros/local_position/pose):
+    # x = mocap x, y = mocap y, z up, yaw 0 = nose along +x, CCW positive.
+    # Groups of 4: x [m], y [m], z [m], yaw [deg]. Example: 1 m square at 1.0 m.
+    # CHANGE THESE to points inside your mocap volume before flying.
+    waypoints: [0.0, 0.0, 1.0,   0.0,
+                1.0, 0.0, 1.0,   0.0,
+                1.0, 1.0, 1.0,  90.0,
+                0.0, 1.0, 1.0, 180.0,
+                0.0, 0.0, 1.0,   0.0]
+    mocap_z_offset: 0.0               # added to every waypoint z (EKF z - mocap z, ~0.12 seen)
+
+    acceptance_radius: 0.15           # m
+    yaw_tolerance_deg: 10.0
+    hold_time: 1.0                    # s at each waypoint before moving on
+    loop: false                       # true = repeat the mission
+
+    # Every waypoint must be inside this box, or the mission is rejected
+    fence_min: [-2.0, -2.0, 0.3]
+    fence_max: [ 2.0,  2.0, 1.8]
+
+    takeoff_alt: 0.0                  # m above arming point; >0 = send takeoff if on ground
+    takeoff_tolerance: 0.10
+    takeoff_timeout: 20.0
+    pose_timeout: 0.5                 # s, stop if EKF pose goes stale
+
+    auto_start: false                 # true = start as soon as FC enters GUIDED (armed)
+    resume_on_guided: false           # true = resume a paused mission when back in GUIDED

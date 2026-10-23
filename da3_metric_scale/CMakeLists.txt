@@ -21,6 +21,8 @@ find_package(OpenCV REQUIRED COMPONENTS core imgproc calib3d video)
 find_package(Eigen3 REQUIRED)
 find_package(mavros_msgs REQUIRED)
 find_package(geographic_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 
 add_executable(da3_metric_scaler src/da3_metric_scaler.cpp)
 target_link_libraries(da3_metric_scaler
@@ -45,7 +47,16 @@ target_link_libraries(mocap_to_mavros
   ${geographic_msgs_TARGETS}
   Eigen3::Eigen)
 
-install(TARGETS da3_metric_scaler mocap_to_mavros DESTINATION lib/${PROJECT_NAME})
+add_executable(guided_waypoints src/guided_waypoints.cpp)
+target_link_libraries(guided_waypoints
+  rclcpp::rclcpp
+  ${geometry_msgs_TARGETS}
+  ${std_msgs_TARGETS}
+  ${nav_msgs_TARGETS}
+  ${std_srvs_TARGETS}
+  ${mavros_msgs_TARGETS})
+
+install(TARGETS da3_metric_scaler mocap_to_mavros guided_waypoints DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 
 ament_package()

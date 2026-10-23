@@ -1,11 +1,12 @@
 # da3_metric_scale
 
-ROS 2 (Jazzy, Kilted, Lyrical) package with two nodes:
+ROS 2 (Jazzy, Kilted, Lyrical) package with three nodes:
 
 | Node | Does |
 |---|---|
 | `mocap_to_mavros` | OptiTrack pose → ENU/FLU → `/mavros/mavros/vision_pose/pose` (ArduPilot ExternalNav), sets EKF origin |
 | `da3_metric_scaler` | Metric scale for DA3 depth from mocap camera poses (floor plane + triangulation), publishes metric depth + camera TF for nvblox |
+| `guided_waypoints` | Sends waypoints to ArduCopter via MAVROS setpoints, only while connected + armed + GUIDED; pauses when you leave GUIDED |
 
 ## Build
 
@@ -20,16 +21,38 @@ Needs `vrpn_mocap`, `mavros_msgs`, `geographic_msgs`, OpenCV, Eigen.
 
 ## Run
 
+DA3 and its TensorRT service (`scripts/trt_inference_service_shm.py` from the wrapper repo) are
+launched from here too. Use `start_da3_service:=false` if you start the service yourself, and
+`da3_service_script:=<path>` if it isn't found automatically.
+
 ```bash
-# everything
+# everything, live
 ros2 launch da3_metric_scale mocap_da3.launch.py motive_ip:=<motive_ip>
 
-# only the ArduPilot bridge
-ros2 launch da3_metric_scale mocap_da3.launch.py motive_ip:=<ip> start_scaler:=false
+# rosbag: DA3 + scaler only. Start this first, then:  ros2 bag play <bag> --clock --rate 0.25
+ros2 launch da3_metric_scale mocap_da3.launch.py start_vrpn:=false start_throttle:=false \
+  start_mavros_bridge:=false use_sim_time:=true mocap_pose_topic:=/mavros/dilon/pose_throttled
 
-# only the scaler (e.g. on a bag that already has the mocap topic)
-ros2 launch da3_metric_scale mocap_da3.launch.py start_vrpn:=false start_mavros_bridge:=false use_sim_time:=true
+# only the ArduPilot bridge (also starts MAVROS; start_mavros:=false if it already runs)
+ros2 launch da3_metric_scale mocap_to_mavros.launch.py motive_ip:=<ip> fcu_url:=/dev/ttyACM0:921600
 ```
+
+### Waypoints (GUIDED)
+
+```bash
+ros2 launch da3_metric_scale guided_waypoints.launch.py          # MAVROS + bridge already running
+# arm, switch to GUIDED on the RC (take off first unless takeoff_alt > 0), then:
+ros2 service call /guided_waypoints/start std_srvs/srv/Trigger
+ros2 service call /guided_waypoints/stop  std_srvs/srv/Trigger   # stop sending, FC holds
+ros2 topic echo /guided_waypoints/status
+# single point / new mission on the fly (EKF local ENU frame, frame_id map):
+ros2 topic pub --once /guided_waypoints/goto geometry_msgs/msg/PoseStamped \
+  "{header: {frame_id: map}, pose: {position: {x: 0.5, y: 0.0, z: 1.0}, orientation: {w: 1.0}}}"
+```
+Waypoints and fence are in `config/guided_waypoints.yaml`.
+
+DA3 is started with `normalize_depth:=false` (required, per-frame normalisation breaks the
+scale) and `keep_image_size:=true`. Change model with `da3_model:=depth-anything/DA3-SMALL`.
 
 ## Configure
 

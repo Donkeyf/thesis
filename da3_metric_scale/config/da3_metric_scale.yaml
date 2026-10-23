@@ -38,10 +38,10 @@ da3_metric_scaler:
     max_pose_gap: 0.1                      # s, max gap between bracketing mocap samples (30 Hz input)
 
     # ---- DA3 output model ----
-    method: both                           # floor | triangulation | both
+    method: floor                          # floor | triangulation | both  (floor only until mocap time offset is calibrated)
     da3_is_disparity: false                # true if DA3 outputs inverse depth / disparity
     fit_shift: false                       # true for affine (relative) DA3 models
-    ema_alpha: 0.1
+    ema_alpha: 1.0                         # 1.0 = per-frame scale (relative DA3: scale changes every frame); <1 smooths
     min_depth: 0.1
     max_depth: 10.0
 
