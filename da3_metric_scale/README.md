@@ -1,12 +1,13 @@
 # da3_metric_scale
 
-ROS 2 (Jazzy, Kilted, Lyrical) package with four nodes:
+ROS 2 (Jazzy, Kilted, Lyrical) package with five nodes (+ nvblox launch):
 
 | Node | Does |
 |---|---|
 | `mocap_to_mavros` | OptiTrack pose → ENU/FLU → `/mavros/mavros/vision_pose/pose` (ArduPilot ExternalNav), sets EKF origin |
 | `da3_metric_scaler` | Metric scale for DA3 depth from mocap camera poses (floor plane + triangulation), publishes metric depth + camera TF for nvblox |
 | `guided_waypoints` | Sends waypoints to ArduCopter via MAVROS setpoints, only while connected + armed + GUIDED; pauses when you leave GUIDED |
+| `esdf_publisher` | Pulls nvblox's 3D ESDF (`get_esdf_and_gradient`) around the drone and publishes `~/esdf_grid` (`da3_metric_scale/msg/EsdfGrid`) and `~/esdf_cloud` (PointCloud2 x,y,z,distance) |
 | `trajectory_tracker` | Samples a re-planned spline (MultiDOFJointTrajectory or Path, 5-10 Hz) at 50 Hz and streams position + velocity + acceleration + yaw + yaw-rate to GUIDED via `setpoint_raw/local` |
 
 ## Build
@@ -18,7 +19,8 @@ colcon build --packages-select da3_metric_scale
 source install/setup.bash
 ```
 
-Needs `vrpn_mocap`, `mavros_msgs`, `geographic_msgs`, OpenCV, Eigen.
+Needs `vrpn_mocap`, `mavros_msgs`, `geographic_msgs`, OpenCV, Eigen, and Isaac ROS nvblox
+(`nvblox_ros`, `nvblox_msgs`; without `nvblox_msgs` the `esdf_publisher` is skipped).
 
 ## Run
 
@@ -66,6 +68,28 @@ ros2 topic echo /trajectory_tracker/status
 python3 scripts/test_circle_trajectory.py --center 0 0 1.0 --radius 0.5 --period 12
 ```
 Limits, feedforward switches and fence are in `config/trajectory_tracker.yaml`.
+
+### Mapping / ESDF (nvblox)
+
+The chain runs at **10 Hz**: `image_throttle` (`raw_image_topic` /image_raw -> `image_topic` /image_da3 at
+`image_rate:=10.0`) -> DA3 -> scaler -> nvblox (ESDF 10 Hz) -> `esdf_publisher` (10 Hz).
+For a bag that only has /image_throttled pass `raw_image_topic:=/image_throttled`.
+
+`mocap_da3.launch.py` also starts **nvblox** (`nvblox_ros/nvblox_node`, 3D ESDF, 5 cm voxels) on the
+scaler's rectified metric depth (`/da3_metric/depth`, TF `mocap -> camera_optical`) and the
+`esdf_publisher`. The map is in `global_frame` (default `map`, the EKF/MAVROS local frame) with a
+static TF `map -> mocap` (`map_mocap_z_offset:=0.12` if EKF z reads above mocap z), so the ESDF,
+`trajectory_tracker` and MAVROS all share one frame.
+
+```bash
+ros2 topic hz /esdf_publisher/esdf_grid           # 3D ESDF for the planner (10 Hz)
+# RViz (fixed frame map): /esdf_publisher/esdf_cloud (colour by 'distance'),
+#   /nvblox_node/mesh, /nvblox_node/static_esdf_pointcloud (slice at 1 m)
+start_nvblox:=false / start_esdf_publisher:=false to turn them off
+```
+EsdfGrid indexing: distance of voxel (ix,iy,iz) = `distances[(ix*ny + iy)*nz + iz]`, centre =
+`origin + (i + 0.5) * voxel_size_m`; `unobserved_value` (-1000) = never seen.
+Configs: `config/nvblox_da3.yaml`, `config/esdf_publisher.yaml`.
 
 DA3 is started with `normalize_depth:=false` (required, per-frame normalisation breaks the
 scale) and `keep_image_size:=true`. Change model with `da3_model:=depth-anything/DA3-SMALL`.

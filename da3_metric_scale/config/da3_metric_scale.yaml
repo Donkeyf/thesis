@@ -80,3 +80,6 @@ da3_metric_scaler:
     edge_dilate_px: 2                      # grow mask so samples near edges are rejected
     edge_mask_output: true                 # zero edge pixels in published depth (nvblox)
     edge_mask_detection: true              # don't detect corners on depth edges
+
+    # ---- Output for nvblox ----
+    rectify_output: true                   # undistort metric depth, publish camera_info with D = 0

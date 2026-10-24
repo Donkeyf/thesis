@@ -1,0 +1,14 @@
+esdf_publisher:
+  ros__parameters:
+    service: /nvblox_node/get_esdf_and_gradient
+    global_frame: map                 # must equal nvblox global_frame (launch arg overrides)
+    center_frame: camera_optical      # box follows the vehicle; '' = fixed box at origin
+    rate: 10.0                        # Hz (matches the 10 Hz depth / ESDF chain)
+    aabb_size: [4.0, 4.0, 2.0]        # m, x y z
+    z_limits: [-0.2, 2.5]             # m, clamp the box to the flight volume
+    full_map: false                   # true = whole map (bigger messages)
+    update_esdf: true
+    nvblox_visualize: false           # true = nvblox also publishes ~/esdf_service_pointcloud
+    unobserved_value: -1000.0         # = nvblox esdf_and_gradients_unobserved_value
+    publish_cloud: true
+    cloud_max_distance: 1.0           # m, cloud only keeps voxels this close to obstacles (<=0: all)

@@ -24,6 +24,13 @@ find_package(geographic_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+find_package(nvblox_msgs QUIET)
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/EsdfGrid.msg"
+  DEPENDENCIES std_msgs geometry_msgs)
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} rosidl_typesupport_cpp)
 
 add_executable(da3_metric_scaler src/da3_metric_scaler.cpp)
 target_link_libraries(da3_metric_scaler
@@ -68,7 +75,24 @@ target_link_libraries(trajectory_tracker
   ${trajectory_msgs_TARGETS}
   ${mavros_msgs_TARGETS})
 
-install(TARGETS da3_metric_scaler mocap_to_mavros guided_waypoints trajectory_tracker DESTINATION lib/${PROJECT_NAME})
+set(EXTRA_TARGETS "")
+if(nvblox_msgs_FOUND)
+  add_executable(esdf_publisher src/esdf_publisher.cpp)
+  target_link_libraries(esdf_publisher
+    rclcpp::rclcpp
+    ${sensor_msgs_TARGETS}
+    ${geometry_msgs_TARGETS}
+    ${nvblox_msgs_TARGETS}
+    tf2_ros::tf2_ros
+    "${cpp_typesupport_target}")
+  list(APPEND EXTRA_TARGETS esdf_publisher)
+else()
+  message(WARNING "nvblox_msgs not found: esdf_publisher will not be built")
+endif()
+
+install(TARGETS da3_metric_scaler mocap_to_mavros guided_waypoints trajectory_tracker
+  ${EXTRA_TARGETS} DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 
+ament_export_dependencies(rosidl_default_runtime)
 ament_package()

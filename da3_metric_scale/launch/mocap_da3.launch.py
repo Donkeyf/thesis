@@ -5,10 +5,18 @@ Live:
   ros2 launch da3_metric_scale mocap_da3.launch.py motive_ip:=<ip>
 
 Rosbag (DA3 + scaler only; start this BEFORE `ros2 bag play <bag> --clock`):
+  (bag recorded with /image_throttled: add raw_image_topic:=/image_throttled)
   ros2 launch da3_metric_scale mocap_da3.launch.py start_vrpn:=false start_throttle:=false \
       start_mavros_bridge:=false use_sim_time:=true mocap_pose_topic:=/mavros/dilon/pose_throttled
 
-Toggle parts with start_vrpn / start_throttle / start_mavros_bridge / start_da3 / start_scaler.
+Toggle parts with start_vrpn / start_throttle / start_mavros_bridge / start_da3 / start_scaler /
+start_nvblox / start_esdf_publisher.
+
+Rates: image_throttle (image_rate, 10 Hz) -> DA3 -> scaler -> nvblox -> esdf_publisher, all 10 Hz.
+
+Mapping: da3_metric_scaler -> /da3_metric/depth (+ TF mocap->camera_optical) -> nvblox_node
+(3D ESDF in global_frame, default 'map' = EKF local frame, linked to 'mocap' by a static TF)
+-> esdf_publisher -> /esdf_publisher/esdf_grid, /esdf_publisher/esdf_cloud.
 The bridge and scaler read the throttled pose (raw pose if start_throttle:=false).
 DA3 runs on TensorRT: this launch also starts scripts/trt_inference_service_shm.py from the
 wrapper repo (found automatically, or set da3_service_script:=<path>). start_da3_service:=false
@@ -40,6 +48,9 @@ def generate_launch_description():
     share = get_package_share_directory('da3_metric_scale')
     bridge_params = os.path.join(share, 'config', 'mocap_to_mavros.yaml')
     scaler_params = os.path.join(share, 'config', 'da3_metric_scale.yaml')
+    nvblox_params = os.path.join(share, 'config', 'nvblox_da3.yaml')
+    esdf_params = os.path.join(share, 'config', 'esdf_publisher.yaml')
+    global_frame = LaunchConfiguration('global_frame')
 
     use_sim_time = {'use_sim_time': ParameterValue(
         LaunchConfiguration('use_sim_time'), value_type=bool)}
@@ -70,7 +81,13 @@ def generate_launch_description():
         DeclareLaunchArgument('mocap_pose_throttled_topic',
                               default_value='/vrpn_mocap/dilon/pose_throttled'),
         DeclareLaunchArgument('throttle_rate', default_value='30.0'),
-        DeclareLaunchArgument('image_topic', default_value='/image_throttled',
+        DeclareLaunchArgument('start_image_throttle', default_value='true',
+                              description='throttle raw_image_topic -> image_topic at image_rate'),
+        DeclareLaunchArgument('raw_image_topic', default_value='/image_raw',
+                              description='camera stream (100 fps)'),
+        DeclareLaunchArgument('image_rate', default_value='10.0',
+                              description='Hz into DA3; sets the rate of the whole chain'),
+        DeclareLaunchArgument('image_topic', default_value='/image_da3',
                               description='Image fed to DA3 and paired by the scaler'),
 
         # ---- DA3 ----
@@ -98,6 +115,22 @@ def generate_launch_description():
         DeclareLaunchArgument('bridge_params', default_value=bridge_params),
         DeclareLaunchArgument('scaler_params', default_value=scaler_params),
 
+        # ---- nvblox / ESDF ----
+        DeclareLaunchArgument('start_nvblox', default_value='true'),
+        DeclareLaunchArgument('start_esdf_publisher', default_value='true'),
+        DeclareLaunchArgument('nvblox_params', default_value=nvblox_params),
+        DeclareLaunchArgument('esdf_params', default_value=esdf_params),
+        DeclareLaunchArgument('global_frame', default_value='map',
+                              description='nvblox/ESDF frame; map = EKF/MAVROS local frame'),
+        DeclareLaunchArgument('mocap_frame', default_value='mocap',
+                              description='scaler world_frame (mocap world)'),
+        DeclareLaunchArgument('map_mocap_z_offset', default_value='0.0',
+                              description='EKF z - mocap z (m), for the map->mocap static TF'),
+        DeclareLaunchArgument('metric_depth_topic', default_value='/da3_metric/depth'),
+        DeclareLaunchArgument('metric_info_topic', default_value='/da3_metric/camera_info'),
+        DeclareLaunchArgument('nvblox_log_level', default_value='warn',
+                              description='nvblox logs every ESDF service call at info'),
+
         Node(
             package='vrpn_mocap',
             executable='client_node',
@@ -118,6 +151,17 @@ def generate_launch_description():
                        throttled_topic],
             parameters=[use_sim_time],
             condition=IfCondition(LaunchConfiguration('start_throttle')),
+        ),
+        # Camera 100 fps -> image_rate (10 Hz) for DA3; everything downstream follows
+        Node(
+            package='topic_tools',
+            executable='throttle',
+            name='image_throttle',
+            output='screen',
+            arguments=['messages', LaunchConfiguration('raw_image_topic'),
+                       LaunchConfiguration('image_rate'), image_topic],
+            parameters=[use_sim_time],
+            condition=IfCondition(LaunchConfiguration('start_image_throttle')),
         ),
         Node(
             package='da3_metric_scale',
@@ -187,5 +231,46 @@ def generate_launch_description():
                          'depth_topic': da3_depth_topic},
                         use_sim_time],
             condition=IfCondition(LaunchConfiguration('start_scaler')),
+        ),
+        # map (EKF local ENU) -> mocap world. x/y/yaw are identical (R_enu_world = I);
+        # only the EKF height offset differs.
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='map_to_mocap_tf',
+            arguments=['--x', '0', '--y', '0', '--z', LaunchConfiguration('map_mocap_z_offset'),
+                       '--frame-id', global_frame,
+                       '--child-frame-id', LaunchConfiguration('mocap_frame')],
+            parameters=[use_sim_time],
+            condition=IfCondition(PythonExpression([
+                "'", global_frame, "' != '", LaunchConfiguration('mocap_frame'), "' and '",
+                LaunchConfiguration('start_nvblox'), "'.lower() == 'true'"])),
+        ),
+        # nvblox: metric DA3 depth + TF -> TSDF -> 3D ESDF
+        Node(
+            package='nvblox_ros',
+            executable='nvblox_node',
+            name='nvblox_node',
+            output='screen',
+            parameters=[LaunchConfiguration('nvblox_params'),
+                        {'global_frame': global_frame},
+                        use_sim_time],
+            remappings=[('camera_0/depth/image', LaunchConfiguration('metric_depth_topic')),
+                        ('camera_0/depth/camera_info', LaunchConfiguration('metric_info_topic'))],
+            ros_arguments=['--log-level', LaunchConfiguration('nvblox_log_level')],
+            condition=IfCondition(LaunchConfiguration('start_nvblox')),
+        ),
+        # 3D ESDF as topics: /esdf_publisher/esdf_grid (EsdfGrid), /esdf_publisher/esdf_cloud
+        Node(
+            package='da3_metric_scale',
+            executable='esdf_publisher',
+            name='esdf_publisher',
+            output='screen',
+            parameters=[LaunchConfiguration('esdf_params'),
+                        {'global_frame': global_frame},
+                        use_sim_time],
+            condition=IfCondition(PythonExpression([
+                "'", LaunchConfiguration('start_nvblox'), "'.lower() == 'true' and '",
+                LaunchConfiguration('start_esdf_publisher'), "'.lower() == 'true'"])),
         ),
     ])

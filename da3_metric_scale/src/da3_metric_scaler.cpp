@@ -186,6 +186,12 @@ public:
     edge_mask_output_ = declare_parameter<bool>("edge_mask_output", true);
     edge_mask_detection_ = declare_parameter<bool>("edge_mask_detection", true);
 
+    // ---------------- Output for nvblox ----------------
+    // nvblox assumes an undistorted pinhole camera: undistort the metric depth
+    // (nearest-neighbour, so depth edges are not blended) and publish camera_info
+    // with zero distortion.
+    rectify_output_ = declare_parameter<bool>("rectify_output", true);
+
     // ---------------- Build T_body_cam ----------------
     if (T_cam_imu_v.size() != 16 || R_body_imu_v.size() != 9 || p_body_imu_v.size() != 3 ||
       up_v.size() != 3)
@@ -466,10 +472,11 @@ private:
       return;
     }
 
-    publishDepth(d, depth_msg->header);
+    // TF first, so nvblox already has the camera pose when the depth arrives
     if (publish_tf_ && T_W_C) {
       publishTf(*T_W_C, depth_msg->header.stamp);
     }
+    publishDepth(d, depth_msg->header);
   }
 
   // ======================================================================
@@ -876,7 +883,6 @@ private:
     if (!camera_frame_.empty()) {
       hdr.frame_id = camera_frame_;
     }
-    depth_pub_->publish(*cv_bridge::CvImage(hdr, "32FC1", out).toImageMsg());
 
     // camera_info rescaled to the depth image resolution
     CameraInfo ci = info_;
@@ -887,6 +893,35 @@ private:
     ci.height = d.rows;
     ci.k[0] *= sx; ci.k[2] *= sx; ci.k[4] *= sy; ci.k[5] *= sy;
     ci.p[0] *= sx; ci.p[2] *= sx; ci.p[3] *= sx; ci.p[5] *= sy; ci.p[6] *= sy;
+
+    if (rectify_output_ && !D_.empty() && cv::countNonZero(D_ != 0) > 0) {
+      if (rect_map1_.empty() || rect_size_ != out.size()) {
+        const cv::Mat Kd = (cv::Mat_<double>(3, 3) << ci.k[0], 0, ci.k[2], 0, ci.k[4], ci.k[5],
+          0, 0, 1);
+        if (fisheye_) {
+          cv::fisheye::initUndistortRectifyMap(
+            Kd, D_, cv::Mat::eye(3, 3, CV_64F), Kd, out.size(), CV_32FC1, rect_map1_,
+            rect_map2_);
+        } else {
+          cv::initUndistortRectifyMap(
+            Kd, D_, cv::Mat::eye(3, 3, CV_64F), Kd, out.size(), CV_32FC1, rect_map1_,
+            rect_map2_);
+        }
+        rect_size_ = out.size();
+        RCLCPP_INFO(get_logger(), "rectifying metric depth for nvblox (%dx%d)", out.cols,
+          out.rows);
+      }
+      cv::Mat rect;
+      cv::remap(out, rect, rect_map1_, rect_map2_, cv::INTER_NEAREST, cv::BORDER_CONSTANT,
+        cv::Scalar(0));
+      out = rect;
+      ci.distortion_model = "plumb_bob";
+      ci.d.assign(5, 0.0);
+      ci.r = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+      ci.p = {ci.k[0], 0.0, ci.k[2], 0.0, 0.0, ci.k[4], ci.k[5], 0.0, 0.0, 0.0, 1.0, 0.0};
+    }
+
+    depth_pub_->publish(*cv_bridge::CvImage(hdr, "32FC1", out).toImageMsg());
     info_pub_->publish(ci);
   }
 
@@ -950,6 +985,9 @@ private:
   double subpix_eps_{0.01};
   bool edge_enable_{true}, edge_mask_output_{true}, edge_mask_detection_{true};
   double edge_rel_grad_{0.05};
+  bool rectify_output_{true};
+  cv::Mat rect_map1_, rect_map2_;
+  cv::Size rect_size_;
   int edge_dilate_px_{2};
   cv::Mat edge_mask_;  // CV_8U at DA3 resolution, 255 = edge/invalid
   double edge_fraction_{0.0};
