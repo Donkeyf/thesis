@@ -23,6 +23,7 @@ find_package(mavros_msgs REQUIRED)
 find_package(geographic_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(trajectory_msgs REQUIRED)
 
 add_executable(da3_metric_scaler src/da3_metric_scaler.cpp)
 target_link_libraries(da3_metric_scaler
@@ -56,7 +57,18 @@ target_link_libraries(guided_waypoints
   ${std_srvs_TARGETS}
   ${mavros_msgs_TARGETS})
 
-install(TARGETS da3_metric_scaler mocap_to_mavros guided_waypoints DESTINATION lib/${PROJECT_NAME})
+add_executable(trajectory_tracker src/trajectory_tracker.cpp)
+target_include_directories(trajectory_tracker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(trajectory_tracker
+  rclcpp::rclcpp
+  ${geometry_msgs_TARGETS}
+  ${std_msgs_TARGETS}
+  ${nav_msgs_TARGETS}
+  ${std_srvs_TARGETS}
+  ${trajectory_msgs_TARGETS}
+  ${mavros_msgs_TARGETS})
+
+install(TARGETS da3_metric_scaler mocap_to_mavros guided_waypoints trajectory_tracker DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 
 ament_package()

@@ -1,12 +1,13 @@
 # da3_metric_scale
 
-ROS 2 (Jazzy, Kilted, Lyrical) package with three nodes:
+ROS 2 (Jazzy, Kilted, Lyrical) package with four nodes:
 
 | Node | Does |
 |---|---|
 | `mocap_to_mavros` | OptiTrack pose → ENU/FLU → `/mavros/mavros/vision_pose/pose` (ArduPilot ExternalNav), sets EKF origin |
 | `da3_metric_scaler` | Metric scale for DA3 depth from mocap camera poses (floor plane + triangulation), publishes metric depth + camera TF for nvblox |
 | `guided_waypoints` | Sends waypoints to ArduCopter via MAVROS setpoints, only while connected + armed + GUIDED; pauses when you leave GUIDED |
+| `trajectory_tracker` | Samples a re-planned spline (MultiDOFJointTrajectory or Path, 5-10 Hz) at 50 Hz and streams position + velocity + acceleration + yaw + yaw-rate to GUIDED via `setpoint_raw/local` |
 
 ## Build
 
@@ -50,6 +51,21 @@ ros2 topic pub --once /guided_waypoints/goto geometry_msgs/msg/PoseStamped \
   "{header: {frame_id: map}, pose: {position: {x: 0.5, y: 0.0, z: 1.0}, orientation: {w: 1.0}}}"
 ```
 Waypoints and fence are in `config/guided_waypoints.yaml`.
+
+### Spline / trajectory tracking (GUIDED)
+
+```bash
+ros2 launch da3_metric_scale trajectory_tracker.launch.py         # MAVROS + bridge already running
+# planner -> /trajectory_tracker/trajectory (trajectory_msgs/MultiDOFJointTrajectory, preferred)
+#         or /trajectory_tracker/path      (nav_msgs/Path)
+# take off, switch to GUIDED, then:
+ros2 service call /trajectory_tracker/enable  std_srvs/srv/Trigger
+ros2 service call /trajectory_tracker/disable std_srvs/srv/Trigger
+ros2 topic echo /trajectory_tracker/status
+# test without a planner: 0.5 m circle at 1 m, 12 s per lap
+python3 scripts/test_circle_trajectory.py --center 0 0 1.0 --radius 0.5 --period 12
+```
+Limits, feedforward switches and fence are in `config/trajectory_tracker.yaml`.
 
 DA3 is started with `normalize_depth:=false` (required, per-frame normalisation breaks the
 scale) and `keep_image_size:=true`. Change model with `da3_model:=depth-anything/DA3-SMALL`.

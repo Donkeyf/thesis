@@ -1,0 +1,30 @@
+trajectory_tracker:
+  ros__parameters:
+    mavros_prefix: /mavros/mavros     # /mavros if your MAVROS topics are /mavros/...
+    frame_id: map                     # EKF local ENU frame (= local_position/pose)
+    rate: 50.0                        # Hz setpoint stream to the FC
+    lookahead: 0.05                   # s, sample the spline slightly ahead (link latency)
+
+    # Feedforward terms sent with the position target (start with vel only, add acc later)
+    send_velocity: true
+    send_acceleration: true
+    send_yaw: true
+    send_yaw_rate: true
+    yaw_mode: trajectory              # trajectory | velocity (face direction of travel) | hold
+    yaw_velocity_min_speed: 0.2       # m/s, below this 'velocity' mode keeps the last yaw
+
+    # Safety
+    max_vel: 1.0                      # m/s, norm clamp on velocity feedforward
+    max_acc: 2.0                      # m/s^2, norm clamp on acceleration feedforward
+    max_yaw_rate_deg: 90.0
+    max_tracking_error: 1.0           # m, reference farther than this from vehicle -> hold
+    traj_timeout: 0.5                 # s without a new trajectory -> hold position
+    pose_timeout: 0.5                 # s, stale EKF pose -> disable
+    fence_min: [-2.0, -2.0, 0.3]
+    fence_max: [ 2.0,  2.0, 1.8]
+
+    # Input handling
+    stop_at_end: true                 # zero velocity at the final point of each trajectory
+    path_speed: 0.5                   # m/s, timing for nav_msgs/Path without timestamps
+    mocap_z_offset: 0.0               # added to every input z (EKF z - mocap z)
+    auto_enable: false                # true = enable as soon as FC enters GUIDED (airborne)
