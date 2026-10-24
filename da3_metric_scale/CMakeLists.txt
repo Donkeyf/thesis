@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(da3_metric_scale LANGUAGES CXX)
+project(da3_metric_scale LANGUAGES C CXX)
 
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
