@@ -27,6 +27,23 @@ find_package(trajectory_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(nvblox_msgs QUIET)
 
+# NLopt (sudo apt install libnlopt-cxx-dev): nlopt.hpp + libnlopt
+find_package(NLopt QUIET CONFIG)
+if(TARGET NLopt::nlopt)
+  set(NLOPT_TARGET NLopt::nlopt)
+elseif(TARGET NLopt::nlopt_cxx)
+  set(NLOPT_TARGET NLopt::nlopt_cxx)
+else()
+  find_library(NLOPT_LIBRARY NAMES nlopt nlopt_cxx)
+  find_path(NLOPT_INCLUDE_DIR nlopt.hpp)
+  if(NLOPT_LIBRARY AND NLOPT_INCLUDE_DIR)
+    add_library(nlopt_imported INTERFACE)
+    target_link_libraries(nlopt_imported INTERFACE ${NLOPT_LIBRARY})
+    target_include_directories(nlopt_imported INTERFACE ${NLOPT_INCLUDE_DIR})
+    set(NLOPT_TARGET nlopt_imported)
+  endif()
+endif()
+
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/EsdfGrid.msg"
   DEPENDENCIES std_msgs geometry_msgs)
@@ -85,9 +102,32 @@ if(nvblox_msgs_FOUND)
     ${nvblox_msgs_TARGETS}
     tf2_ros::tf2_ros
     "${cpp_typesupport_target}")
+  # find this package's generated message libraries even if the shell wasn't re-sourced
+  set_target_properties(esdf_publisher PROPERTIES INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
   list(APPEND EXTRA_TARGETS esdf_publisher)
 else()
   message(WARNING "nvblox_msgs not found: esdf_publisher will not be built")
+endif()
+
+if(NLOPT_TARGET)
+  # Fast-Planner: kinodynamic A* + B-spline (NLopt) + time adjustment on the ESDF grid
+  add_executable(fast_planner src/fast_planner_node.cpp)
+  target_include_directories(fast_planner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(fast_planner
+    rclcpp::rclcpp
+    ${geometry_msgs_TARGETS}
+    ${std_msgs_TARGETS}
+    ${nav_msgs_TARGETS}
+    ${std_srvs_TARGETS}
+    ${trajectory_msgs_TARGETS}
+    ${mavros_msgs_TARGETS}
+    "${cpp_typesupport_target}"
+    ${NLOPT_TARGET}
+    Eigen3::Eigen)
+  set_target_properties(fast_planner PROPERTIES INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
+  list(APPEND EXTRA_TARGETS fast_planner)
+else()
+  message(WARNING "NLopt not found (sudo apt install libnlopt-cxx-dev): fast_planner will not be built")
 endif()
 
 install(TARGETS da3_metric_scaler mocap_to_mavros guided_waypoints trajectory_tracker

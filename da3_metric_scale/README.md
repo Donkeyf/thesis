@@ -1,6 +1,6 @@
 # da3_metric_scale
 
-ROS 2 (Jazzy, Kilted, Lyrical) package with five nodes (+ nvblox launch):
+ROS 2 (Jazzy, Kilted, Lyrical) package with six nodes (+ nvblox launch):
 
 | Node | Does |
 |---|---|
@@ -8,6 +8,7 @@ ROS 2 (Jazzy, Kilted, Lyrical) package with five nodes (+ nvblox launch):
 | `da3_metric_scaler` | Metric scale for DA3 depth from mocap camera poses (floor plane + triangulation), publishes metric depth + camera TF for nvblox |
 | `guided_waypoints` | Sends waypoints to ArduCopter via MAVROS setpoints, only while connected + armed + GUIDED; pauses when you leave GUIDED |
 | `esdf_publisher` | Pulls nvblox's 3D ESDF (`get_esdf_and_gradient`) around the drone and publishes `~/esdf_grid` (`da3_metric_scale/msg/EsdfGrid`) and `~/esdf_cloud` (PointCloud2 x,y,z,distance) |
+| `fast_planner` | Fast-Planner (Zhou et al., RA-L 2019) on the ESDF grid: kinodynamic A* → B-spline optimisation (NLopt) → time adjustment → replanning; streams the trajectory to `trajectory_tracker`, only while armed + GUIDED |
 | `trajectory_tracker` | Samples a re-planned spline (MultiDOFJointTrajectory or Path, 5-10 Hz) at 50 Hz and streams position + velocity + acceleration + yaw + yaw-rate to GUIDED via `setpoint_raw/local` |
 
 ## Build
@@ -19,8 +20,9 @@ colcon build --packages-select da3_metric_scale
 source install/setup.bash
 ```
 
-Needs `vrpn_mocap`, `mavros_msgs`, `geographic_msgs`, OpenCV, Eigen, and Isaac ROS nvblox
-(`nvblox_ros`, `nvblox_msgs`; without `nvblox_msgs` the `esdf_publisher` is skipped).
+Needs `vrpn_mocap`, `mavros_msgs`, `geographic_msgs`, OpenCV, Eigen, Isaac ROS nvblox
+(`nvblox_ros`, `nvblox_msgs`; without `nvblox_msgs` the `esdf_publisher` is skipped) and NLopt
+for the planner (`sudo apt install libnlopt-cxx-dev`; without it `fast_planner` is skipped).
 
 ## Run
 
@@ -93,6 +95,56 @@ Configs: `config/nvblox_da3.yaml`, `config/esdf_publisher.yaml`.
 
 DA3 is started with `normalize_depth:=false` (required, per-frame normalisation breaks the
 scale) and `keep_image_size:=true`. Change model with `da3_model:=depth-anything/DA3-SMALL`.
+
+### Planning (Fast-Planner + tracker)
+
+```bash
+ros2 launch da3_metric_scale mocap_to_mavros.launch.py      # MAVROS + mocap bridge
+ros2 launch da3_metric_scale mocap_da3.launch.py start_vrpn:=false start_throttle:=false \
+  start_mavros_bridge:=false mocap_pose_topic:=/vrpn_mocap/dilon/pose_throttled   # mapping -> ESDF
+ros2 launch da3_metric_scale fast_planner.launch.py          # planner + trajectory_tracker
+# take off (Loiter/AltHold), switch to GUIDED, then
+ros2 service call /trajectory_tracker/enable std_srvs/srv/Trigger
+# goal: RViz "2D Goal Pose" (fixed frame map; z = default_goal_z 1.0 m) or
+ros2 topic pub --once /fast_planner/goal geometry_msgs/msg/PoseStamped \
+  "{header: {frame_id: map}, pose: {position: {x: 1.0, y: 0.5, z: 1.0}}}"
+ros2 topic echo /fast_planner/status                         # FSM state, last plan
+ros2 service call /fast_planner/cancel std_srvs/srv/Trigger  # stop and hold
+```
+
+Per plan (`include/da3_metric_scale/`, ROS-free and unit-tested):
+1. **Kinodynamic A*** (`kino_astar.hpp`): double integrator, (2r+1)³ primitives, J = ∫|u|² + ρT,
+   closed-form heuristic, analytic expansion. A node is free if ESDF > `clearance` and inside the fence.
+2. **B-spline fit** (`non_uniform_bspline.hpp`): uniform cubic, knot span ts = `ctrl_pt_dist / max_vel`;
+   the first/last 3 control points are solved exactly from the start/end pos, vel, acc.
+3. **Optimisation** (`bspline_optimizer.hpp`, NLopt `LD_LBFGS`, analytic gradients):
+   λ1·f_s (elastic band) + λ2·f_c (ESDF, trilinear, d_thr) + λ3·(f_v + f_a). The paper's weights
+   10 / 0.8 / 0.01 are the defaults. The first and last 3 control points stay fixed.
+4. **Time adjustment** (Algorithm 2): knot spans with |V_i| > vmax or |A_i| > amax are stretched
+   by min(α, ratio), α = 1.1, iterated. Knots that shape the start state are left alone, so
+   replans stay continuous in position, velocity and acceleration.
+5. **Check**: dense ESDF check (> `check_clearance`). If the optimised curve fails, the plain
+   A* fit is tried, otherwise the plan is rejected.
+
+Replanning: every `replan_period` from the active trajectory at now + lookahead (receding
+horizon), immediately when a new ESDF shows the remaining trajectory in collision, and an
+**emergency hold** when that collision is less than `emergency_time` away, or when the ESDF stops
+arriving. Leaving GUIDED / disarming pauses the planner (goal kept, replans from odom on return).
+The trajectory is republished at 10 Hz (pos, vel, acc, yaw, yaw rate every 50 ms), so the
+tracker's 0.5 s staleness hold only triggers if the planner dies. Yaw follows the velocity
+(`yaw_mode: velocity`) so the camera sees where it flies.
+
+RViz: `/fast_planner/bspline_path`, `/fast_planner/astar_path`, `/fast_planner/control_points`
+(Path), `/fast_planner/current_goal`, `/trajectory_tracker/reference`, `/esdf_publisher/esdf_cloud`.
+
+Offline tests (no ROS needed):
+```bash
+g++ -O2 -std=c++17 -Iinclude -I/usr/include/eigen3 test/test_fast_planner.cpp -lnlopt -o tfp && ./tfp
+g++ -O2 -std=c++17 -Itest/mock -Iinclude -I/usr/include/eigen3 test/test_planner_sim.cpp -lnlopt -o sim && ./sim
+```
+`test_planner_sim` runs the real node against a mocked ROS API in closed loop (room with
+obstacles, a wall and pop-up obstacles appearing mid-flight, leaving GUIDED, losing the ESDF).
+Config: `config/fast_planner.yaml`.
 
 ## Configure
 

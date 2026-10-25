@@ -1,0 +1,76 @@
+fast_planner:
+  ros__parameters:
+    # ---------------------------------------------------------------- I/O
+    mavros_prefix: /mavros/mavros       # local_position/pose, local_position/velocity_local, state
+    frame_id: map                       # EKF local ENU frame (ESDF grid, goals, output)
+    esdf_topic: /esdf_publisher/esdf_grid
+    trajectory_topic: /trajectory_tracker/trajectory
+    rviz_goal_topic: /goal_pose         # RViz "2D Goal Pose"; also ~/goal (PoseStamped, uses z)
+    default_goal_z: 1.0                 # m, height for RViz goals (they arrive with z = 0)
+    require_guided: true                # plan/execute only while connected + armed + GUIDED
+
+    # ---------------------------------------------------------------- limits (per axis)
+    max_vel: 0.8                        # m/s   (trajectory_tracker clamps at its own max_vel)
+    max_acc: 1.0                        # m/s^2
+    use_fence: true                     # keep inside the tracker fence minus a margin
+    fence_min: [-1.8, -1.8, 0.5]
+    fence_max: [ 1.8,  1.8, 1.6]
+
+    # ---------------------------------------------------------------- map
+    clearance: 0.3                      # m, A* nodes/primitives need ESDF > clearance
+    min_clearance: 0.1                  # m, lowest relaxed clearance (start close to obstacles)
+    check_clearance: 0.15               # m, final spline must keep ESDF > this, else rejected
+    check_dt: 0.02                      # s, dense sampling for collision checks
+    unknown_distance: 1.0               # m, ESDF value assumed in unobserved / out-of-grid space
+    unknown_is_occupied: false          # true = never fly through unobserved space
+
+    # ---------------------------------------------------------------- kinodynamic A* (Sec. III)
+    astar:
+      r: 2                              # (2r+1)^3 input primitives per node
+      tau: 0.6                          # s primitive duration (0.5*max_acc*tau^2 must exceed the
+                                        # resolution, otherwise A* cannot leave the start voxel from rest)
+      rho: 0.3                          # time weight in J = int|u|^2 + rho*T (room scale: ~0.3)
+      resolution: 0.1                   # m, pruning voxel
+      horizon: 5.0                      # m, receding horizon (whole room here)
+      goal_tol: 0.15                    # m
+      check_dt: 0.05                    # s
+      sample_dt: 0.1                    # s
+      lambda_heu: 5.0                   # heuristic inflation (1 = optimal, slower)
+      max_nodes: 10000
+
+    # ---------------------------------------------------------------- B-spline optimisation (Sec. IV), NLopt
+    ctrl_pt_dist: 0.3                   # m, knot span ts = ctrl_pt_dist / max_vel
+    optimize: true                      # false = A* + B-spline fit only
+    opt:
+      lambda_smooth: 10.0               # lambda_1 (paper)
+      lambda_collision: 0.8             # lambda_2 (paper). ~5.0 keeps noticeably more clearance
+      lambda_feasibility: 0.01          # lambda_3 (paper)
+      dist_threshold: 0.4               # d_thr [m]
+      max_iterations: 200
+      max_time: 0.03                    # s
+      algorithm: LD_LBFGS               # LD_LBFGS | LD_MMA | LD_TNEWTON_PRECOND_RESTART | LD_VAR2 | LD_SLSQP
+
+    # ---------------------------------------------------------------- time adjustment (Sec. V)
+    time_alpha: 1.1                     # alpha: max knot-span stretch per iteration
+    max_time_iterations: 30
+    feasibility_tolerance: 0.05         # accept sampled |v|,|a| up to 5 % over the limit
+
+    # ---------------------------------------------------------------- replanning / execution
+    exec_rate: 20.0                     # Hz FSM
+    publish_rate: 10.0                  # Hz trajectory republish (tracker traj_timeout is 0.5 s)
+    replan_period: 1.0                  # s, receding-horizon replanning interval
+    replan_lookahead: 0.15              # s, new plan starts here on the active one (auto-grows with plan time)
+    no_replan_near_goal: 1.0            # s, skip periodic replans in the last second
+    collision_check_horizon: 3.0        # s of the active trajectory checked on every new ESDF
+    emergency_time: 0.6                 # s, collision closer than this -> hold immediately
+    max_deviation: 0.5                  # m, odom vs reference -> replan from odom
+    esdf_timeout: 1.0                   # s without ESDF -> hold
+    pose_timeout: 0.5
+    output_dt: 0.05                     # s between published trajectory points
+    output_horizon: 10.0                # s of trajectory per message
+    hold_after_goal: true               # keep publishing a hold at the goal
+
+    # ---------------------------------------------------------------- yaw
+    yaw_mode: velocity                  # velocity (camera looks where it flies) | goal | hold
+    yaw_min_speed: 0.2                  # m/s, below this keep the current yaw
+    max_yaw_rate_deg: 45.0

@@ -3,7 +3,7 @@
 <package format="3">
   <name>da3_metric_scale</name>
   <version>0.1.0</version>
-  <description>Metric scale for Depth Anything 3 (ROS 2 Jazzy..Lyrical) depth from OptiTrack poses (floor plane + triangulation), and OptiTrack -> MAVROS vision pose for ArduPilot.</description>
+  <description>Metric scale for Depth Anything 3 (ROS 2 Jazzy..Lyrical) depth from OptiTrack poses (floor plane + triangulation), OptiTrack -> MAVROS vision pose for ArduPilot, nvblox ESDF, Fast-Planner (kinodynamic A* + NLopt B-spline) and a GUIDED trajectory tracker.</description>
   <maintainer email="dilon.hew@gmail.com">Dilon</maintainer>
   <license>MIT</license>
 
@@ -26,6 +26,7 @@
   <depend>std_srvs</depend>
   <depend>trajectory_msgs</depend>
   <depend>nvblox_msgs</depend>
+  <depend>libnlopt-cxx-dev</depend>
   <exec_depend>rosidl_default_runtime</exec_depend>
   <exec_depend>nvblox_ros</exec_depend>
   <exec_depend>topic_tools</exec_depend>
