@@ -1,6 +1,13 @@
 // fast_planner_node - Fast-Planner (Zhou et al., RA-L 2019) on the nvblox ESDF, feeding
 // trajectory_tracker (ArduCopter GUIDED via MAVROS).
 //
+// Built twice (CMakeLists.txt):
+//   fast_planner    plain Fast-Planner
+//   raptor_planner  (-DRAPTOR_NODE) + RAPTOR Sec. VI risk-aware trajectory refinement (Zhou et
+//                   al., T-RO 2021): if the trajectory enters unknown space at p_f and p_f only
+//                   becomes reliably visible too late to stop (v^2/2a_max > d - R_q), the curve
+//                   is re-optimised so that p_f is viewed earlier with a safe reaction distance.
+//
 //   ESDF  /esdf_publisher/esdf_grid (da3_metric_scale/EsdfGrid, frame map)
 //   odom  <mavros_prefix>/local_position/pose + velocity_local (EKF ENU, frame map)
 //   FC    <mavros_prefix>/state  (plans/executes only while connected + armed + GUIDED)
@@ -121,13 +128,21 @@ std::shared_ptr<ActiveTraj> makeHold(const V3 & p, double yaw, double t0)
 }
 }  // namespace
 
+#ifdef RAPTOR_NODE
+static constexpr const char * kNodeName = "raptor_planner";
+static constexpr bool kRiskDefault = true;
+#else
+static constexpr const char * kNodeName = "fast_planner";
+static constexpr bool kRiskDefault = false;
+#endif
+
 class FastPlannerNode : public rclcpp::Node
 {
   enum class State {WAIT_GOAL, WAIT_READY, GEN_NEW, EXEC};
 
 public:
   FastPlannerNode()
-  : Node("fast_planner")
+  : Node(kNodeName)
   {
     prefix_ = declare_parameter<std::string>("mavros_prefix", "/mavros/mavros");
     frame_id_ = declare_parameter<std::string>("frame_id", "map");
@@ -190,6 +205,18 @@ public:
     P.fence_min = V3(fmin[0], fmin[1], fmin[2]);
     P.fence_max = V3(fmax[0], fmax[1], fmax[2]);
     core_ = std::make_unique<FastPlannerCore>(P);
+    // RAPTOR Sec. VI risk-aware refinement
+    P.risk.enable = declare_parameter<bool>("risk.enable", kRiskDefault);
+    P.risk.psi_min = declare_parameter<double>("risk.psi_min", 0.25);
+    P.risk.delta_v = declare_parameter<double>("risk.delta_v", 0.05);
+    P.risk.R_q = declare_parameter<double>("risk.R_q", 0.3);
+    P.risk.lambda_r = declare_parameter<double>("risk.lambda_r", 10.0);
+    P.risk.w_r = declare_parameter<double>("risk.w_r", 1.0);
+    P.risk.alpha = declare_parameter<double>("risk.alpha", 1.1);
+    P.risk.max_iterations = declare_parameter<int>("risk.max_iterations", 5);
+    P.risk.sample_dt = declare_parameter<double>("risk.sample_dt", 0.02);
+    P.risk.min_frontier_time = declare_parameter<double>("risk.min_frontier_time", 0.3);
+    core_->params().risk = P.risk;
     map_.unknown_distance = declare_parameter<double>("unknown_distance", 1.0);
     map_.unknown_is_occupied = declare_parameter<bool>("unknown_is_occupied", false);
 
@@ -200,6 +227,9 @@ public:
     ctrl_pub_ = create_publisher<nav_msgs::msg::Path>("~/control_points", 1);
     goal_pub_ = create_publisher<PoseStamped>("~/current_goal", rclcpp::QoS(1).transient_local());
     status_pub_ = create_publisher<std_msgs::msg::String>("~/status", 10);
+    frontier_pub_ = create_publisher<PoseStamped>("~/frontier_point", 1);     // p_f
+    critical_pub_ = create_publisher<PoseStamped>("~/critical_view_point", 1);  // p_c, along v_c
+    viewpt_pub_ = create_publisher<PoseStamped>("~/view_point", 1);           // p_r(t_s)
 
     const auto sqos = rclcpp::SensorDataQoS();
     esdf_sub_ = create_subscription<da3_metric_scale::msg::EsdfGrid>(
@@ -253,10 +283,10 @@ public:
     status_timer_ = create_wall_timer(1s, std::bind(&FastPlannerNode::publishStatus, this));
 
     RCLCPP_INFO(
-      get_logger(), "fast_planner ready: vmax %.2f amax %.2f clearance %.2f, fence [%.1f %.1f %.1f]"
-      "..[%.1f %.1f %.1f], NLopt %s. Send a goal: RViz '2D Goal Pose' or ~/goal",
-      vmax, amax, P.clearance, fmin[0], fmin[1], fmin[2], fmax[0], fmax[1], fmax[2],
-      P.opt.algorithm.c_str());
+      get_logger(), "%s ready: vmax %.2f amax %.2f clearance %.2f, fence [%.1f %.1f %.1f]"
+      "..[%.1f %.1f %.1f], NLopt %s, risk-aware refinement %s. Send a goal: RViz '2D Goal Pose' "
+      "or ~/goal", kNodeName, vmax, amax, P.clearance, fmin[0], fmin[1], fmin[2], fmax[0], fmax[1],
+      fmax[2], P.opt.algorithm.c_str(), P.risk.enable ? "ON" : "off");
   }
 
 private:
@@ -532,6 +562,14 @@ private:
       r.t_astar_ms, r.expanded, r.t_opt_ms, r.opt.evaluations, r.opt.cost_before,
       r.opt.cost_after, r.t_time_ms);
     publishViz(r);
+    if (core_->params().risk.enable) {
+      last_refine_ = r.refine.message;
+      if (r.refine.refined || !r.refine.safe) {
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000, "risk-aware: %s%s (%.1f ms)",
+          r.refine.message.c_str(), r.used_refined ? "" : " [refined curve not used]",
+          r.t_refine_ms);
+      }
+    }
     return true;
   }
 
@@ -651,6 +689,31 @@ private:
     astar_pub_->publish(a);
     spline_pub_->publish(b);
     ctrl_pub_->publish(c);
+    const auto & V = r.refine.vis;
+    if (core_->params().risk.enable && V.has_frontier) {
+      PoseStamped f = ps(V.p_f);
+      f.header.stamp = a.header.stamp;
+      frontier_pub_->publish(f);
+      if (!V.visible) {
+        PoseStamped pc = ps(V.p_c);
+        pc.header.stamp = a.header.stamp;
+        // orientation: x axis along v_c (from p_f toward p_c), for an RViz arrow
+        const double yaw = std::atan2(V.v_c.y(), V.v_c.x());
+        const double pitch = -std::asin(std::max(-1.0, std::min(1.0, V.v_c.z())));
+        const Eigen::Quaterniond q = Eigen::AngleAxisd(yaw, V3::UnitZ()) *
+          Eigen::AngleAxisd(pitch, V3::UnitY());
+        pc.pose.orientation.x = q.x();
+        pc.pose.orientation.y = q.y();
+        pc.pose.orientation.z = q.z();
+        pc.pose.orientation.w = q.w();
+        critical_pub_->publish(pc);
+      }
+      if (r.used_refined) {
+        PoseStamped v = ps(r.refine.p_s);
+        v.header.stamp = a.header.stamp;
+        viewpt_pub_->publish(v);
+      }
+    }
   }
 
   void setReason(const std::string & s) {reason_ = s;}
@@ -669,6 +732,7 @@ private:
     }
     s += " | map " + std::string(mapFresh() ? "ok" : (have_map_ ? "stale" : "none"));
     s += " | plans " + std::to_string(n_plans_) + " | last: " + last_result_;
+    if (core_->params().risk.enable) {s += " | risk: " + last_refine_;}
     if (!reason_.empty() && state_ != State::EXEC) {s += " | " + reason_;}
     std_msgs::msg::String m;
     m.data = s;
@@ -703,11 +767,11 @@ private:
   rclcpp::CallbackGroup::SharedPtr pub_group_;
   double last_attempt_{0};
   int fail_count_{0}, n_plans_{0};
-  std::string last_result_{"-"}, reason_;
+  std::string last_result_{"-"}, reason_, last_refine_{"-"};
 
   rclcpp::Publisher<trajectory_msgs::msg::MultiDOFJointTrajectory>::SharedPtr traj_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr astar_pub_, spline_pub_, ctrl_pub_;
-  rclcpp::Publisher<PoseStamped>::SharedPtr goal_pub_;
+  rclcpp::Publisher<PoseStamped>::SharedPtr goal_pub_, frontier_pub_, critical_pub_, viewpt_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
   rclcpp::Subscription<da3_metric_scale::msg::EsdfGrid>::SharedPtr esdf_sub_;
   rclcpp::Subscription<PoseStamped>::SharedPtr pose_sub_, goal_sub_, rviz_goal_sub_;

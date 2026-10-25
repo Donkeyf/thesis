@@ -18,6 +18,7 @@
 #include "da3_metric_scale/esdf_map.hpp"
 #include "da3_metric_scale/kino_astar.hpp"
 #include "da3_metric_scale/non_uniform_bspline.hpp"
+#include "da3_metric_scale/risk_aware_refiner.hpp"
 
 namespace da3_metric_scale
 {
@@ -38,6 +39,7 @@ struct PlannerParams
   bool use_fence = false;
   Eigen::Vector3d fence_min{-1e9, -1e9, -1e9};
   Eigen::Vector3d fence_max{1e9, 1e9, 1e9};
+  RiskParams risk;               // RAPTOR Sec. VI refinement (off = plain Fast-Planner)
 };
 
 struct PlanResult
@@ -53,6 +55,9 @@ struct PlanResult
   int expanded = 0;
   double duration = 0, max_vel = 0, max_acc = 0, min_dist = 0;
   bool used_fallback = false;            // optimiser output collided -> fitted A* path used
+  RefineResult refine;                   // RAPTOR risk-aware refinement
+  bool used_refined = false;             // the refined curve is the one returned
+  double t_refine_ms = 0;
   bool at_goal = false;                  // start already within goal tolerance
 };
 
@@ -145,11 +150,11 @@ public:
     // ---------------------------------------------------------------- 3) NLopt optimisation
     t0 = clk::now();
     Eigen::MatrixXd ctrl_opt = ctrl;
+    OptParams op = P_.opt;
+    op.use_fence = P_.use_fence;
+    op.fence_min = P_.fence_min;
+    op.fence_max = P_.fence_max;
     if (P_.optimize) {
-      OptParams op = P_.opt;
-      op.use_fence = P_.use_fence;
-      op.fence_min = P_.fence_min;
-      op.fence_max = P_.fence_max;
       BsplineOptimizer opt(op, [&map](const Eigen::Vector3d & x, Eigen::Vector3d & g) {
           return map.distance(x, &g);
         });
@@ -157,12 +162,26 @@ public:
     }
     R.t_opt_ms = ms(t0);
 
+    // ---------------------------------------------------------------- 3b) RAPTOR risk-aware refinement
+    Eigen::MatrixXd ctrl_ref = ctrl_opt;
+    if (P_.risk.enable) {
+      t0 = clk::now();
+      RiskAwareRefiner rf(P_.risk, op);
+      R.refine = rf.refine(map, ctrl_ref, ts);
+      R.t_refine_ms = ms(t0);
+    }
+
     // ---------------------------------------------------------------- 4) time adjustment + checks
     t0 = clk::now();
     NonUniformBspline best;
     std::string why;
-    if (finalize(map, ctrl_opt, ts, best, R, why)) {
+    std::string why_ref;
+    if (R.refine.refined && finalize(map, ctrl_ref, ts, best, R, why_ref)) {
       R.pos = best;
+      R.used_refined = true;
+    } else if (finalize(map, ctrl_opt, ts, best, R, why)) {
+      R.pos = best;
+      if (R.refine.refined) {R.refine.message += " | refined curve rejected: " + why_ref;}
     } else if (P_.optimize && finalize(map, ctrl, ts, best, R, why)) {
       R.pos = best;                // optimised curve unsafe -> plain fit of the A* path
       R.used_fallback = true;

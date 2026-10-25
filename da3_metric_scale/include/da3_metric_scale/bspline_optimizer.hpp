@@ -41,11 +41,44 @@ struct OptParams
   Eigen::Vector3d fence_max{1e9, 1e9, 1e9};
 };
 
+// RAPTOR (Zhou et al., T-RO 2021) Sec. VI-B2 view + safety constraints at time t_s, Eqs. 7-14:
+//   d_v  = (p(t_s) - p_f) - ((p(t_s) - p_f) . v_c) v_c                   (8)
+//   f_dv  = F(delta_v, ||d_v||)            -> (||d_v|| - delta_v)^2 if ||d_v|| > delta_v   (10)
+//   f_dsf = F(||p(t_s) - p_f||, d_s)       -> (||p - p_f|| - d_s)^2 if ||p - p_f|| < d_s   (11)
+//   f_r   = f_p2 + lambda_r (f_dv + w_r f_dsf)                                             (14)
+// p(t_s) = sum_k N_k(t_s) q_k on the uniform cubic, so dp/dq_k = N_k(t_s) I (Eqs. 12, 13).
+struct ViewConstraint
+{
+  bool enabled = false;
+  double t_s = 0;                  // curve time [s] (uniform knot span dt)
+  Eigen::Vector3d p_f{Eigen::Vector3d::Zero()};   // frontier intersecting point
+  Eigen::Vector3d v_c{Eigen::Vector3d::UnitX()};  // critical view direction (unit, p_c - p_f)
+  double delta_v = 0.1;            // [m]
+  double d_s = 0.5;                // safe reaction distance [m]
+  double lambda_r = 10.0;
+  double w_r = 1.0;
+};
+
+// uniform cubic B-spline basis at curve time t: segment j and weights of Q_j..Q_{j+3}
+inline void uniformCubicBasis(double t, double dt, int n_ctrl, int & j, double w[4])
+{
+  const int nseg = n_ctrl - 3;
+  double s = t / dt;
+  j = static_cast<int>(std::floor(s));
+  j = std::max(0, std::min(nseg - 1, j));
+  const double u = std::min(1.0, std::max(0.0, s - j));
+  const double u2 = u * u, u3 = u2 * u;
+  w[0] = (1 - 3 * u + 3 * u2 - u3) / 6.0;
+  w[1] = (4 - 6 * u2 + 3 * u3) / 6.0;
+  w[2] = (1 + 3 * u + 3 * u2 - 3 * u3) / 6.0;
+  w[3] = u3 / 6.0;
+}
+
 struct OptResult
 {
   bool ok = false;
   double cost_before = 0, cost_after = 0;
-  double f_smooth = 0, f_coll = 0, f_feas = 0;
+  double f_smooth = 0, f_coll = 0, f_feas = 0, f_view = 0, f_safe = 0;
   int evaluations = 0;
   std::string message;
 };
@@ -58,6 +91,8 @@ public:
 
   BsplineOptimizer(const OptParams & p, DistFn dist)
   : P_(p), dist_(std::move(dist)) {}
+
+  void setViewConstraint(const ViewConstraint & vc) {vc_ = vc;}
 
   // ctrl: (N+1)x3 uniform cubic control points, dt: knot span. Optimised in place.
   OptResult optimize(Eigen::MatrixXd & ctrl, double dt)
@@ -101,11 +136,13 @@ public:
       r.message = std::string("nlopt: ") + e.what();
     }
     x = best_x_;
-    double parts[3];
+    double parts[5];
     r.cost_after = cost(x.data(), g.data(), parts);
     r.f_smooth = parts[0];
     r.f_coll = parts[1];
     r.f_feas = parts[2];
+    r.f_view = parts[3];
+    r.f_safe = parts[4];
     r.evaluations = evals_;
     for (int i = first_; i <= last_; ++i) {
       for (int k = 0; k < 3; ++k) {ctrl(i, k) = x[3 * (i - first_) + k];}
@@ -203,21 +240,48 @@ private:
       }
     }
 
+    // RAPTOR view (f_dv) + reaction distance (f_dsf) at t_s
+    double fv = 0, fsd = 0;
+    std::vector<Eigen::Vector3d> gr(n, Eigen::Vector3d::Zero());
+    if (vc_.enabled) {
+      int j;
+      double w[4];
+      uniformCubicBasis(vc_.t_s, dt_, n, j, w);
+      Eigen::Vector3d p = Eigen::Vector3d::Zero();
+      for (int m = 0; m < 4; ++m) {p += w[m] * q[j + m];}
+      const Eigen::Vector3d r = p - vc_.p_f;
+      const Eigen::Matrix3d Pperp = Eigen::Matrix3d::Identity() - vc_.v_c * vc_.v_c.transpose();
+      const Eigen::Vector3d dv = Pperp * r;                       // Eq. 8
+      const double ndv = dv.norm();
+      Eigen::Vector3d gp = Eigen::Vector3d::Zero();               // d f / d p(t_s)
+      if (ndv > vc_.delta_v) {                                    // Eq. 10, 12
+        fv = (ndv - vc_.delta_v) * (ndv - vc_.delta_v);
+        gp += 2.0 * (ndv - vc_.delta_v) * (Pperp * dv) / ndv;
+      }
+      const double nr = r.norm();
+      if (nr < vc_.d_s && nr > 1e-9) {                            // Eq. 11, 13
+        fsd = (nr - vc_.d_s) * (nr - vc_.d_s);
+        gp += vc_.w_r * 2.0 * (nr - vc_.d_s) * r / nr;
+      }
+      for (int m = 0; m < 4; ++m) {gr[j + m] = vc_.lambda_r * w[m] * gp;}
+    }
+
     const double total = P_.lambda_smooth * fs + P_.lambda_collision * fc +
-      P_.lambda_feasibility * ff;
+      P_.lambda_feasibility * ff + vc_.lambda_r * (fv + vc_.w_r * fsd);   // Eq. 14
     if (grad) {
       for (int i = first_; i <= last_; ++i) {
         const Eigen::Vector3d g = P_.lambda_smooth * gs[i] + P_.lambda_collision * gc[i] +
-          P_.lambda_feasibility * gf[i];
+          P_.lambda_feasibility * gf[i] + gr[i];
         for (int k = 0; k < 3; ++k) {grad[3 * (i - first_) + k] = g(k);}
       }
     }
-    if (parts) {parts[0] = fs; parts[1] = fc; parts[2] = ff;}
+    if (parts) {parts[0] = fs; parts[1] = fc; parts[2] = ff; parts[3] = fv; parts[4] = fsd;}
     return total;
   }
 
   OptParams P_;
   DistFn dist_;
+  ViewConstraint vc_;
   Eigen::MatrixXd Q_;
   double dt_{0.1};
   const int pb_ = 3;

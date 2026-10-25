@@ -50,6 +50,20 @@ public:
     return v;
   }
 
+  // True if the voxel containing p was never observed, or p is outside the grid
+  // (RAPTOR Sec. VI-A: the trajectory "exits the known-free space and enters the unknown space")
+  bool isUnknown(const Eigen::Vector3d & p) const
+  {
+    if (empty()) {return true;}
+    const Eigen::Vector3d q = (p - origin_) / vs_;
+    const int ix = static_cast<int>(std::floor(q.x()));
+    const int iy = static_cast<int>(std::floor(q.y()));
+    const int iz = static_cast<int>(std::floor(q.z()));
+    if (ix < 0 || iy < 0 || iz < 0 || ix >= nx_ || iy >= ny_ || iz >= nz_) {return true;}
+    const float v = d_[(static_cast<size_t>(ix) * ny_ + iy) * nz_ + iz];
+    return std::fabs(v - unobs_) < 1e-2f;
+  }
+
   // Trilinear distance; optional gradient (d distance / d position)
   double distance(const Eigen::Vector3d & p, Eigen::Vector3d * grad = nullptr) const
   {

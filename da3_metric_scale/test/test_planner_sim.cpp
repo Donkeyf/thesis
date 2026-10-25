@@ -1,7 +1,8 @@
 // Closed-loop simulation of fast_planner_node (mocked ROS): perfect tracking of the published
 // trajectory, static room ESDF, then an obstacle that appears mid-flight.
 //   g++ -O2 -std=c++17 -Itest/mock -Iinclude -I/usr/include/eigen3 test/test_planner_sim.cpp \
-//       -lnlopt_cxx -lnlopt -o /tmp/sim && /tmp/sim
+//       -lnlopt -o sim && ./sim
+//   RAPTOR node + an unobserved region:  add  -DRAPTOR_NODE -DSIM_UNKNOWN
 #define main fast_planner_main
 #include "../src/fast_planner_node.cpp"
 #undef main
@@ -25,6 +26,10 @@ static da3_metric_scale::msg::EsdfGrid grid(const std::vector<Box> & boxes)
   for (uint32_t i = 0; i < g.nx; ++i) for (uint32_t j = 0; j < g.ny; ++j) for (uint32_t k = 0; k < g.nz; ++k) {
     V3 c = V3(-2, -2, -0.2) + (V3(i, j, k) + V3::Constant(0.5)) * 0.05;
     double m = 5; for (auto & b : boxes) m = std::min(m, boxSdf(c, b));
+#ifdef SIM_UNKNOWN
+    // never-observed region behind the box (exercises the RAPTOR frontier logic)
+    if (c.x() > 1.0 && c.y() < -0.2) {m = -1000.0;}
+#endif
     g.distances[(i * g.ny + j) * g.nz + k] = m;
   }
   return g;

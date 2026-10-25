@@ -126,8 +126,26 @@ if(NLOPT_TARGET)
     Eigen3::Eigen)
   set_target_properties(fast_planner PROPERTIES INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
   list(APPEND EXTRA_TARGETS fast_planner)
+
+  # RAPTOR: same node + Sec. VI risk-aware trajectory refinement (risk.enable defaults to true)
+  add_executable(raptor_planner src/fast_planner_node.cpp)
+  target_compile_definitions(raptor_planner PRIVATE RAPTOR_NODE)
+  target_include_directories(raptor_planner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(raptor_planner
+    rclcpp::rclcpp
+    ${geometry_msgs_TARGETS}
+    ${std_msgs_TARGETS}
+    ${nav_msgs_TARGETS}
+    ${std_srvs_TARGETS}
+    ${trajectory_msgs_TARGETS}
+    ${mavros_msgs_TARGETS}
+    "${cpp_typesupport_target}"
+    ${NLOPT_TARGET}
+    Eigen3::Eigen)
+  set_target_properties(raptor_planner PROPERTIES INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
+  list(APPEND EXTRA_TARGETS raptor_planner)
 else()
-  message(WARNING "NLopt not found (sudo apt install libnlopt-cxx-dev): fast_planner will not be built")
+  message(WARNING "NLopt not found (sudo apt install libnlopt-cxx-dev): fast_planner / raptor_planner will not be built")
 endif()
 
 install(TARGETS da3_metric_scaler mocap_to_mavros guided_waypoints trajectory_tracker

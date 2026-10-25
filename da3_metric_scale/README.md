@@ -1,6 +1,6 @@
 # da3_metric_scale
 
-ROS 2 (Jazzy, Kilted, Lyrical) package with six nodes (+ nvblox launch):
+ROS 2 (Jazzy, Kilted, Lyrical) package with seven nodes (+ nvblox launch):
 
 | Node | Does |
 |---|---|
@@ -9,6 +9,7 @@ ROS 2 (Jazzy, Kilted, Lyrical) package with six nodes (+ nvblox launch):
 | `guided_waypoints` | Sends waypoints to ArduCopter via MAVROS setpoints, only while connected + armed + GUIDED; pauses when you leave GUIDED |
 | `esdf_publisher` | Pulls nvblox's 3D ESDF (`get_esdf_and_gradient`) around the drone and publishes `~/esdf_grid` (`da3_metric_scale/msg/EsdfGrid`) and `~/esdf_cloud` (PointCloud2 x,y,z,distance) |
 | `fast_planner` | Fast-Planner (Zhou et al., RA-L 2019) on the ESDF grid: kinodynamic A* → B-spline optimisation (NLopt) → time adjustment → replanning; streams the trajectory to `trajectory_tracker`, only while armed + GUIDED |
+| `raptor_planner` | `fast_planner` + RAPTOR (Zhou et al., T-RO 2021) Sec. VI risk-aware trajectory refinement: makes the point where the trajectory enters unknown space visible early enough to stop |
 | `trajectory_tracker` | Samples a re-planned spline (MultiDOFJointTrajectory or Path, 5-10 Hz) at 50 Hz and streams position + velocity + acceleration + yaw + yaw-rate to GUIDED via `setpoint_raw/local` |
 
 ## Build
@@ -145,6 +146,40 @@ g++ -O2 -std=c++17 -Itest/mock -Iinclude -I/usr/include/eigen3 test/test_planner
 `test_planner_sim` runs the real node against a mocked ROS API in closed loop (room with
 obstacles, a wall and pop-up obstacles appearing mid-flight, leaving GUIDED, losing the ESDF).
 Config: `config/fast_planner.yaml`.
+
+### RAPTOR planner (risk-aware refinement, Sec. VI)
+
+Same pipeline, inputs, outputs, services and tracker as `fast_planner`, plus one stage between
+the NLopt optimisation and the time adjustment (`include/da3_metric_scale/risk_aware_refiner.hpp`):
+
+1. **Frontier intersection**: the first point p_f where the trajectory enters unobserved space
+   (unobserved ESDF voxels, or outside the ESDF box).
+2. **Critical view**: visibility ψ(p, p_f) = smallest ESDF distance on the line of sight (Eq. 5).
+   t_c is the first time from which ψ ≥ `psi_min` holds until p_f, giving p_c and the
+   critical view direction v_c.
+3. **Worst-case check** (Eq. 6): if v(t_c)²/2a_max ≤ |p_c − p_f| − R_q, the drone can stop when it
+   first sees p_f, and nothing is changed.
+4. **Iterative refinement** (Algorithm 3): pick t_s, then re-optimise with
+   f_r = f_p2 + λ_r (f_dv + w_r f_dsf) (Eqs. 10–14, analytic gradients, NLopt). This puts the drone
+   on the critical view ray at t_s (within δ_v) and at least d_s = v²/2a_max + R_q from p_f. The
+   speed estimate grows by α until the criterion holds. If the refined curve fails the collision
+   check, the unrefined one is used.
+
+```bash
+ros2 launch da3_metric_scale raptor_planner.launch.py        # instead of fast_planner.launch.py
+ros2 topic echo /raptor_planner/status                       # "... | risk: refined, safe after 2 it ..."
+```
+RViz (PoseStamped): `/raptor_planner/frontier_point` (p_f), `/raptor_planner/critical_view_point`
+(p_c, arrow along v_c), `/raptor_planner/view_point` (p_r(t_s)), plus the same paths as fast_planner.
+Config: `config/raptor_planner.yaml` (`risk.*`). Keep `unknown_is_occupied: false`, otherwise
+trajectories never enter unknown space and nothing is refined.
+
+Offline test (paper Fig. 10/11 scene: wall corner with unobserved space behind it):
+```bash
+g++ -O2 -std=c++17 -Iinclude -I/usr/include/eigen3 test/test_risk_refine.cpp -lnlopt -o trr && ./trr
+g++ -O2 -std=c++17 -DRAPTOR_NODE -DSIM_UNKNOWN -Itest/mock -Iinclude -I/usr/include/eigen3 \
+    test/test_planner_sim.cpp -lnlopt -o simr && ./simr
+```
 
 ## Configure
 
