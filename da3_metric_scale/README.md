@@ -32,11 +32,13 @@ launched from here too. Use `start_da3_service:=false` if you start the service 
 `da3_service_script:=<path>` if it isn't found automatically.
 
 ```bash
-# everything, live
+# everything, live (starts usb_cam 640x480 @ 100 fps -> throttled to 10 Hz for DA3)
 ros2 launch da3_metric_scale mocap_da3.launch.py motive_ip:=<motive_ip>
+#   camera args: video_device:=/dev/video0 camera_width:=640 camera_height:=480
+#                camera_fps:=100.0 pixel_format:=mjpeg2rgb   (start_camera:=false for bags)
 
 # rosbag: DA3 + scaler only. Start this first, then:  ros2 bag play <bag> --clock --rate 0.25
-ros2 launch da3_metric_scale mocap_da3.launch.py start_vrpn:=false start_throttle:=false \
+ros2 launch da3_metric_scale mocap_da3.launch.py start_camera:=false start_vrpn:=false start_throttle:=false \
   start_mavros_bridge:=false use_sim_time:=true mocap_pose_topic:=/mavros/dilon/pose_throttled
 
 # only the ArduPilot bridge (also starts MAVROS; start_mavros:=false if it already runs)

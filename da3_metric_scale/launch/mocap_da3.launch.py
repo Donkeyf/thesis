@@ -1,10 +1,13 @@
 """Starts vrpn_mocap, a mocap pose throttle, mocap_to_mavros (OptiTrack -> ArduPilot),
 Depth Anything 3 (GerdsenAI wrapper) and da3_metric_scaler.
 
-Live:
+Live (also starts the USB camera: usb_cam 640x480 @ 100 fps on /image_raw, throttled to
+image_rate = 10 Hz on /image_da3 for DA3 and everything downstream):
   ros2 launch da3_metric_scale mocap_da3.launch.py motive_ip:=<ip>
+  camera args: start_camera (true), video_device (/dev/video0), camera_width (640),
+               camera_height (480), camera_fps (100.0), pixel_format (mjpeg2rgb)
 
-Rosbag (DA3 + scaler only; start this BEFORE `ros2 bag play <bag> --clock`):
+Rosbag (add start_camera:=false; start this BEFORE `ros2 bag play <bag> --clock`):
   (bag recorded with /image_throttled: add raw_image_topic:=/image_throttled)
   ros2 launch da3_metric_scale mocap_da3.launch.py start_vrpn:=false start_throttle:=false \
       start_mavros_bridge:=false use_sim_time:=true mocap_pose_topic:=/mavros/dilon/pose_throttled
@@ -75,6 +78,17 @@ def generate_launch_description():
         DeclareLaunchArgument('start_scaler', default_value='true'),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
 
+        # ---- USB camera (usb_cam) ----
+        DeclareLaunchArgument('start_camera', default_value='true',
+                              description='start usb_cam (false for rosbags)'),
+        DeclareLaunchArgument('video_device', default_value='/dev/video0'),
+        DeclareLaunchArgument('camera_width', default_value='640',
+                              description='must match the Kalibr calibration resolution'),
+        DeclareLaunchArgument('camera_height', default_value='480'),
+        DeclareLaunchArgument('camera_fps', default_value='100.0'),
+        DeclareLaunchArgument('pixel_format', default_value='mjpeg2rgb',
+                              description='mjpeg2rgb | yuyv2rgb | ...'),
+
         # ---- topics ----
         DeclareLaunchArgument('motive_ip', default_value='192.168.1.100'),
         DeclareLaunchArgument('mocap_pose_topic', default_value='/vrpn_mocap/dilon/pose'),
@@ -131,6 +145,22 @@ def generate_launch_description():
         DeclareLaunchArgument('nvblox_log_level', default_value='warn',
                               description='nvblox logs every ESDF service call at info'),
 
+        # ros2 run usb_cam usb_cam_node_exe -> /image_raw (+ /camera_info) at camera_fps
+        Node(
+            package='usb_cam',
+            executable='usb_cam_node_exe',
+            name='usb_cam',
+            output='screen',
+            parameters=[{
+                'video_device': LaunchConfiguration('video_device'),
+                'image_width': ParameterValue(LaunchConfiguration('camera_width'), value_type=int),
+                'image_height': ParameterValue(LaunchConfiguration('camera_height'), value_type=int),
+                'framerate': ParameterValue(LaunchConfiguration('camera_fps'), value_type=float),
+                'pixel_format': LaunchConfiguration('pixel_format'),
+            }, use_sim_time],
+            remappings=[('image_raw', LaunchConfiguration('raw_image_topic'))],
+            condition=IfCondition(LaunchConfiguration('start_camera')),
+        ),
         Node(
             package='vrpn_mocap',
             executable='client_node',
