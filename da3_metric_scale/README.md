@@ -32,8 +32,11 @@ launched from here too. Use `start_da3_service:=false` if you start the service 
 `da3_service_script:=<path>` if it isn't found automatically.
 
 ```bash
-# everything, live (starts usb_cam 640x480 @ 100 fps -> throttled to 10 Hz for DA3)
-ros2 launch da3_metric_scale mocap_da3.launch.py motive_ip:=<motive_ip>
+# everything, live, one launch: MAVROS + OptiTrack -> ArduPilot + usb_cam (100 fps -> 10 Hz)
+# + DA3 + scaler + nvblox + ESDF
+ros2 launch da3_metric_scale mocap_da3.launch.py motive_ip:=169.254.179.249 \
+  fcu_url:=/dev/ttyACM0:921600 map_mocap_z_offset:=0.12
+#   start_mavros:=false if MAVROS already runs; gcs_url:=udp://@<laptop-ip>:14550 for Mission Planner
 #   camera args: video_device:=/dev/video0 camera_width:=640 camera_height:=480
 #                camera_fps:=100.0 pixel_format:=mjpeg2rgb   (start_camera:=false for bags)
 

@@ -43,7 +43,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('params', default_value=default_params),
-        DeclareLaunchArgument('motive_ip', default_value='192.168.1.100'),
+        DeclareLaunchArgument('motive_ip', default_value='169.254.179.249',
+                              description='Motive PC IP only (VRPN port 3883 is added)'),
         DeclareLaunchArgument('start_vrpn', default_value='true'),
         DeclareLaunchArgument('start_throttle', default_value='true'),
         DeclareLaunchArgument('start_mavros', default_value='true'),

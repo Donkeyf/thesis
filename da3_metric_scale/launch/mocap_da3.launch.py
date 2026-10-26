@@ -1,5 +1,13 @@
-"""Starts vrpn_mocap, a mocap pose throttle, mocap_to_mavros (OptiTrack -> ArduPilot),
-Depth Anything 3 (GerdsenAI wrapper) and da3_metric_scaler.
+"""One launch for the whole system: MAVROS + vrpn_mocap + mocap pose throttle + mocap_to_mavros
+(OptiTrack -> ArduPilot), usb_cam + image throttle, Depth Anything 3 (GerdsenAI wrapper),
+da3_metric_scaler, nvblox and esdf_publisher.
+
+Everything (OptiTrack -> ArduPilot + DA3 mapping), live:
+  ros2 launch da3_metric_scale mocap_da3.launch.py motive_ip:=169.254.179.249 \
+      fcu_url:=/dev/ttyACM0:921600 map_mocap_z_offset:=0.12
+  MAVROS args: start_mavros (true), fcu_url, gcs_url (e.g. udp://@<laptop-ip>:14550),
+               tgt_system, tgt_component, mavros_namespace (mavros)
+  start_mavros:=false if MAVROS already runs elsewhere (two instances on one port fight).
 
 Live (also starts the USB camera: usb_cam 640x480 @ 100 fps on /image_raw, throttled to
 image_rate = 10 Hz on /image_da3 for DA3 and everything downstream):
@@ -27,6 +35,17 @@ if you already run the service yourself.
 """
 import glob
 import os
+
+
+def _mavros_param_files():
+    """apm_pluginlists.yaml / apm_config.yaml from the mavros package, as apm.launch uses."""
+    try:
+        share = get_package_share_directory('mavros')
+    except Exception:
+        return []
+    files = [os.path.join(share, 'launch', f)
+             for f in ('apm_pluginlists.yaml', 'apm_config.yaml')]
+    return [f for f in files if os.path.isfile(f)]
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -78,6 +97,16 @@ def generate_launch_description():
         DeclareLaunchArgument('start_scaler', default_value='true'),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
 
+        # ---- MAVROS (flight controller link) ----
+        DeclareLaunchArgument('start_mavros', default_value='true',
+                              description='false if MAVROS already runs elsewhere'),
+        DeclareLaunchArgument('fcu_url', default_value='/dev/ttyACM0:921600'),
+        DeclareLaunchArgument('gcs_url', default_value='',
+                              description='e.g. udp://@<laptop-ip>:14550 for Mission Planner'),
+        DeclareLaunchArgument('tgt_system', default_value='1'),
+        DeclareLaunchArgument('tgt_component', default_value='1'),
+        DeclareLaunchArgument('mavros_namespace', default_value='mavros'),
+
         # ---- USB camera (usb_cam) ----
         DeclareLaunchArgument('start_camera', default_value='true',
                               description='start usb_cam (false for rosbags)'),
@@ -90,7 +119,8 @@ def generate_launch_description():
                               description='mjpeg2rgb | yuyv2rgb | ...'),
 
         # ---- topics ----
-        DeclareLaunchArgument('motive_ip', default_value='192.168.1.100'),
+        DeclareLaunchArgument('motive_ip', default_value='169.254.179.249',
+                              description='Motive PC IP only (VRPN port 3883 is added)'),
         DeclareLaunchArgument('mocap_pose_topic', default_value='/vrpn_mocap/dilon/pose'),
         DeclareLaunchArgument('mocap_pose_throttled_topic',
                               default_value='/vrpn_mocap/dilon/pose_throttled'),
@@ -145,6 +175,24 @@ def generate_launch_description():
         DeclareLaunchArgument('nvblox_log_level', default_value='warn',
                               description='nvblox logs every ESDF service call at info'),
 
+        # MAVROS -> /mavros/mavros/... (Pixracer over USB by default)
+        Node(
+            package='mavros',
+            executable='mavros_node',
+            namespace=LaunchConfiguration('mavros_namespace'),
+            output='screen',
+            parameters=_mavros_param_files() + [{
+                'fcu_url': LaunchConfiguration('fcu_url'),
+                'gcs_url': LaunchConfiguration('gcs_url'),
+                'tgt_system': ParameterValue(LaunchConfiguration('tgt_system'), value_type=int),
+                'tgt_component': ParameterValue(LaunchConfiguration('tgt_component'),
+                                                value_type=int),
+                'fcu_protocol': 'v2.0',
+            }, use_sim_time],
+            condition=IfCondition(PythonExpression([
+                "'", LaunchConfiguration('start_mavros'), "'.lower() == 'true' and '",
+                LaunchConfiguration('use_sim_time'), "'.lower() != 'true'"])),
+        ),
         # ros2 run usb_cam usb_cam_node_exe -> /image_raw (+ /camera_info) at camera_fps
         Node(
             package='usb_cam',
