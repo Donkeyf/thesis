@@ -12,6 +12,9 @@
 //   odom  <mavros_prefix>/local_position/pose + velocity_local (EKF ENU, frame map)
 //   FC    <mavros_prefix>/state  (plans/executes only while connected + armed + GUIDED)
 //   goal  ~/goal (PoseStamped) or RViz "2D Goal Pose" (/goal_pose, z = default_goal_z)
+//   mission  mission_goals (x, y, z, yaw_deg groups) flown in order; starts automatically when
+//         the FC enters GUIDED (mission_auto_start) or via ~/start_mission. On GUIDED the planner
+//         also enables trajectory_tracker itself (auto_enable_tracker -> /trajectory_tracker/enable)
 //   out   /trajectory_tracker/trajectory (MultiDOFJointTrajectory: pos, vel, acc, yaw, yaw rate
 //         every output_dt; republished at publish_rate so the tracker never goes stale)
 //
@@ -164,6 +167,22 @@ public:
     max_yaw_rate_ = declare_parameter<double>("max_yaw_rate_deg", 45.0) * M_PI / 180.0;
     default_goal_z_ = declare_parameter<double>("default_goal_z", 1.0);
     hold_after_goal_ = declare_parameter<bool>("hold_after_goal", true);
+    // GUIDED automation: enable the tracker and run the mission when the FC enters GUIDED
+    auto_enable_tracker_ = declare_parameter<bool>("auto_enable_tracker", true);
+    const std::string enable_srv =
+      declare_parameter<std::string>("tracker_enable_service", "/trajectory_tracker/enable");
+    const std::string tracker_status =
+      declare_parameter<std::string>("tracker_status_topic", "/trajectory_tracker/status");
+    const auto mg = declare_parameter<std::vector<double>>("mission_goals", std::vector<double>{});
+    mission_auto_start_ = declare_parameter<bool>("mission_auto_start", true);
+    mission_loop_ = declare_parameter<bool>("mission_loop", false);
+    mission_hold_time_ = declare_parameter<double>("mission_hold_time", 1.0);
+    if (mg.size() % 4 != 0) {
+      throw std::invalid_argument("mission_goals needs groups of 4: x, y, z, yaw_deg");
+    }
+    for (size_t i = 0; i + 3 < mg.size(); i += 4) {
+      mission_.push_back({V3(mg[i], mg[i + 1], mg[i + 2]), mg[i + 3] * M_PI / 180.0});
+    }
 
     PlannerParams P;
     const double vmax = declare_parameter<double>("max_vel", 0.8);
@@ -256,9 +275,23 @@ public:
       declare_parameter<std::string>("rviz_goal_topic", "/goal_pose"), 10,
       [this](PoseStamped::ConstSharedPtr m) {onGoal(*m, true);});
 
+    tracker_status_sub_ = create_subscription<std_msgs::msg::String>(
+      tracker_status, 10, [this](std_msgs::msg::String::ConstSharedPtr m) {
+        tracker_disabled_ = m->data.rfind("DISABLED", 0) == 0;
+        last_tracker_status_ = now();
+      });
+    enable_client_ = create_client<Trigger>(enable_srv);
+    start_mission_srv_ = create_service<Trigger>(
+      "~/start_mission", [this](const std::shared_ptr<Trigger::Request>,
+      std::shared_ptr<Trigger::Response> res) {
+        res->success = startMission(res->message);
+      });
+
     cancel_srv_ = create_service<Trigger>(
       "~/cancel", [this](const std::shared_ptr<Trigger::Request>,
       std::shared_ptr<Trigger::Response> res) {
+        if (mission_active_) {RCLCPP_INFO(get_logger(), "mission stopped");}
+        mission_active_ = false;
         has_goal_ = false;
         state_ = State::WAIT_GOAL;
         holdHere("cancelled");
@@ -281,6 +314,16 @@ public:
       std::chrono::duration<double>(1.0 / publish_rate_), std::bind(&FastPlannerNode::publish, this),
       pub_group_);
     status_timer_ = create_wall_timer(1s, std::bind(&FastPlannerNode::publishStatus, this));
+    guided_timer_ = create_wall_timer(1s, std::bind(&FastPlannerNode::guidedAutomation, this));
+    if (!mission_.empty()) {
+      RCLCPP_INFO(get_logger(), "mission: %zu goals%s%s", mission_.size(),
+        mission_auto_start_ ? ", starts when the FC enters GUIDED" : ", start with ~/start_mission",
+        mission_loop_ ? ", looping" : "");
+      for (size_t i = 0; i < mission_.size(); ++i) {
+        RCLCPP_INFO(get_logger(), "  [%zu] %.2f %.2f %.2f yaw %.0f deg", i, mission_[i].p.x(),
+          mission_[i].p.y(), mission_[i].p.z(), mission_[i].yaw * 180.0 / M_PI);
+      }
+    }
 
     RCLCPP_INFO(
       get_logger(), "%s ready: vmax %.2f amax %.2f clearance %.2f, fence [%.1f %.1f %.1f]"
@@ -321,6 +364,15 @@ private:
     }
     V3 g(m.pose.position.x, m.pose.position.y, m.pose.position.z);
     if (from_rviz && std::fabs(g.z()) < 1e-3) {g.z() = default_goal_z_;}
+    if (mission_active_) {
+      RCLCPP_WARN(get_logger(), "manual goal received: mission stopped");
+      mission_active_ = false;
+    }
+    setGoal(g, yawOf(m.pose.orientation));
+  }
+
+  bool setGoal(V3 g, double yaw)
+  {
     const auto & P = core_->params();
     if (P.use_fence) {
       const V3 c = g.cwiseMax(P.fence_min).cwiseMin(P.fence_max);
@@ -337,22 +389,115 @@ private:
         RCLCPP_WARN(
           get_logger(), "goal (%.2f %.2f %.2f) rejected: ESDF %.2f m <= clearance %.2f m",
           g.x(), g.y(), g.z(), d, P.clearance);
-        return;
+        return false;
       }
     }
     goal_ = g;
-    goal_yaw_ = yawOf(m.pose.orientation);
+    goal_yaw_ = yaw;
     has_goal_ = true;
     new_goal_ = true;
     fail_count_ = 0;
-    PoseStamped gp = m;
+    PoseStamped gp;
     gp.header.frame_id = frame_id_;
     gp.header.stamp = now();
     gp.pose.position.x = g.x();
     gp.pose.position.y = g.y();
     gp.pose.position.z = g.z();
+    gp.pose.orientation.z = std::sin(0.5 * yaw);
+    gp.pose.orientation.w = std::cos(0.5 * yaw);
     goal_pub_->publish(gp);
     RCLCPP_INFO(get_logger(), "new goal (%.2f, %.2f, %.2f)", g.x(), g.y(), g.z());
+    return true;
+  }
+
+  // ---------------------------------------------------------------- mission + GUIDED automation
+  bool startMission(std::string & msg)
+  {
+    if (mission_.empty()) {msg = "no mission_goals configured"; return false;}
+    mission_active_ = true;
+    mission_done_ = false;
+    mission_idx_ = 0;
+    goal_reached_t_ = -1;
+    if (!setGoal(mission_[0].p, mission_[0].yaw)) {
+      mission_active_ = false;
+      msg = "first mission goal rejected (see log)";
+      return false;
+    }
+    msg = "mission started: " + std::to_string(mission_.size()) + " goals";
+    RCLCPP_INFO(get_logger(), "%s", msg.c_str());
+    return true;
+  }
+
+  // called when a goal is reached: hold, then move on to the next mission goal
+  void missionStep(double t)
+  {
+    if (!mission_active_ || has_goal_) {return;}
+    if (goal_reached_t_ < 0) {goal_reached_t_ = t;}
+    if (t - goal_reached_t_ < mission_hold_time_) {return;}
+    goal_reached_t_ = -1;
+    ++mission_idx_;
+    if (mission_idx_ >= mission_.size()) {
+      if (!mission_loop_) {
+        mission_active_ = false;
+        mission_done_ = true;
+        RCLCPP_INFO(get_logger(), "mission complete (%zu goals), holding", mission_.size());
+        return;
+      }
+      mission_idx_ = 0;
+    }
+    RCLCPP_INFO(get_logger(), "mission goal %zu/%zu", mission_idx_ + 1, mission_.size());
+    if (!setGoal(mission_[mission_idx_].p, mission_[mission_idx_].yaw)) {
+      RCLCPP_WARN(get_logger(), "mission goal %zu rejected, skipping", mission_idx_ + 1);
+    }
+  }
+
+  // 1 Hz: detect entering GUIDED, enable the tracker, start / resume the mission
+  void guidedAutomation()
+  {
+    const bool guided = last_fc_.nanoseconds() > 0 && (now() - last_fc_).seconds() < 3.0 &&
+      fc_.connected && fc_.armed && fc_.mode == "GUIDED";
+    if (guided && !was_guided_) {
+      RCLCPP_INFO(get_logger(), "FC entered GUIDED");
+      if (mission_active_) {
+        RCLCPP_INFO(get_logger(), "resuming mission at goal %zu/%zu", mission_idx_ + 1,
+          mission_.size());
+      } else if (mission_auto_start_ && !mission_.empty() && !mission_done_ && !has_goal_) {
+        std::string msg;
+        startMission(msg);
+      }
+    }
+    if (!guided && was_guided_ && mission_active_) {
+      RCLCPP_WARN(get_logger(), "left GUIDED: mission paused at goal %zu/%zu", mission_idx_ + 1,
+        mission_.size());
+    }
+    was_guided_ = guided;
+
+    // the tracker disables itself whenever the FC leaves GUIDED; re-enable it on return
+    const bool status_fresh = last_tracker_status_.nanoseconds() > 0 &&
+      (now() - last_tracker_status_).seconds() < 3.0;
+    if (!auto_enable_tracker_ || !guided || !status_fresh || !tracker_disabled_ ||
+      enable_pending_)
+    {
+      return;
+    }
+    if (!enable_client_->service_is_ready()) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "tracker enable service not available");
+      return;
+    }
+    enable_pending_ = true;
+    enable_client_->async_send_request(
+      std::make_shared<Trigger::Request>(),
+      [this](rclcpp::Client<Trigger>::SharedFuture f) {
+        enable_pending_ = false;
+        const auto r = f.get();
+        if (r->success) {
+          tracker_disabled_ = false;
+          RCLCPP_INFO(get_logger(), "trajectory_tracker enabled: %s", r->message.c_str());
+        } else {
+          RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
+            "trajectory_tracker enable refused (retrying): %s", r->message.c_str());
+        }
+      });
   }
 
   // ---------------------------------------------------------------- readiness
@@ -391,6 +536,7 @@ private:
     const double t = now().seconds();
     if (!has_goal_) {
       state_ = State::WAIT_GOAL;
+      missionStep(t);
       return;
     }
     if (!poseFresh()) {
@@ -725,6 +871,11 @@ private:
     if (state_ == State::EXEC && active_) {
       s += active_->is_hold ? " (holding)" : (active_->to_goal ? " (to goal)" : " (to horizon)");
     }
+    if (mission_active_) {
+      s += " | mission " + std::to_string(mission_idx_ + 1) + "/" + std::to_string(mission_.size());
+    } else if (mission_done_) {
+      s += " | mission done";
+    }
     if (has_goal_) {
       char buf[96];
       std::snprintf(buf, sizeof(buf), " | goal %.2f %.2f %.2f", goal_.x(), goal_.y(), goal_.z());
@@ -777,7 +928,17 @@ private:
   rclcpp::Subscription<PoseStamped>::SharedPtr pose_sub_, goal_sub_, rviz_goal_sub_;
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr vel_sub_;
   rclcpp::Subscription<mavros_msgs::msg::State>::SharedPtr state_sub_;
-  rclcpp::Service<Trigger>::SharedPtr cancel_srv_, replan_srv_;
+  rclcpp::Service<Trigger>::SharedPtr cancel_srv_, replan_srv_, start_mission_srv_;
+  rclcpp::Client<Trigger>::SharedPtr enable_client_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tracker_status_sub_;
+  rclcpp::TimerBase::SharedPtr guided_timer_;
+  struct MissionGoal {V3 p; double yaw;};
+  std::vector<MissionGoal> mission_;
+  size_t mission_idx_{0};
+  bool mission_active_{false}, mission_done_{false}, mission_auto_start_{true}, mission_loop_{false};
+  double mission_hold_time_{1.0}, goal_reached_t_{-1};
+  bool auto_enable_tracker_{true}, was_guided_{false}, tracker_disabled_{true}, enable_pending_{false};
+  rclcpp::Time last_tracker_status_{0, 0, RCL_ROS_TIME};
   rclcpp::TimerBase::SharedPtr exec_timer_, pub_timer_, status_timer_;
 };
 

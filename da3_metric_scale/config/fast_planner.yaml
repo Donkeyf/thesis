@@ -9,12 +9,27 @@ fast_planner:
     default_goal_z: 1.0                 # m, height for RViz goals (they arrive with z = 0)
     require_guided: true                # plan/execute only while connected + armed + GUIDED
 
+    # ---------------------------------------------------------------- mission / GUIDED automation
+    # When the FC enters GUIDED (connected + armed) the planner
+    #   1) enables trajectory_tracker itself (calls tracker_enable_service, retried every 1 s
+    #      while the tracker reports DISABLED, e.g. refused until airborne), and
+    #   2) starts the mission (mission_auto_start), or resumes it if it was paused.
+    # Leaving GUIDED pauses everything (the tracker disables itself); the mission resumes at the
+    # same goal on the next GUIDED. A manual goal (~/goal, RViz) stops the mission.
+    # ~/start_mission restarts it from the first goal, ~/cancel stops it and holds.
+    auto_enable_tracker: true
+    tracker_enable_service: /trajectory_tracker/enable
+    tracker_status_topic: /trajectory_tracker/status
+    # Groups of 4: x, y, z [m], yaw [deg] in the map (EKF) frame. Empty = no mission.
+    # yaw is only used with yaw_mode: goal. CHANGE THESE to points inside your volume.
+
+
     # ---------------------------------------------------------------- limits (per axis)
-    max_vel: 0.8                        # m/s   (trajectory_tracker clamps at its own max_vel)
+    max_vel: 0.3                        # m/s   (trajectory_tracker clamps at its own max_vel)
     max_acc: 1.0                        # m/s^2
     use_fence: true                     # keep inside the tracker fence minus a margin
-    fence_min: [-1.8, -1.8, 0.5]
-    fence_max: [ 1.8,  1.8, 1.6]
+    fence_min: [-10.0, -10.0, 0.3]
+    fence_max: [ 10.0,  10.0, 1.6]
 
     # ---------------------------------------------------------------- map
     clearance: 0.3                      # m, A* nodes/primitives need ESDF > clearance

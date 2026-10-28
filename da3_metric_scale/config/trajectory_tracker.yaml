@@ -20,11 +20,11 @@ trajectory_tracker:
     max_tracking_error: 1.0           # m, reference farther than this from vehicle -> hold
     traj_timeout: 0.5                 # s without a new trajectory -> hold position
     pose_timeout: 0.5                 # s, stale EKF pose -> disable
-    fence_min: [-2.0, -2.0, 0.3]
-    fence_max: [ 2.0,  2.0, 1.8]
+    fence_min: [-10.0, -10.0, 0.3]
+    fence_max: [ 10.0,  10.0, 1.8]
 
     # Input handling
     stop_at_end: true                 # zero velocity at the final point of each trajectory
     path_speed: 0.5                   # m/s, timing for nav_msgs/Path without timestamps
     mocap_z_offset: 0.0               # added to every input z (EKF z - mocap z)
-    auto_enable: false                # true = enable as soon as FC enters GUIDED (airborne)
+    auto_enable: true               # true = enable as soon as FC enters GUIDED (airborne)

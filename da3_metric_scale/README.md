@@ -118,6 +118,17 @@ ros2 topic echo /fast_planner/status                         # FSM state, last p
 ros2 service call /fast_planner/cancel std_srvs/srv/Trigger  # stop and hold
 ```
 
+**Mission / GUIDED automation:** put goals in `mission_goals` (groups of x, y, z, yaw_deg in
+`fast_planner.yaml` / `raptor_planner.yaml`). When the FC enters GUIDED (armed) the planner enables
+the tracker itself (retrying until the tracker accepts, i.e. airborne) and flies the goals in order,
+holding `mission_hold_time` at each. Leaving GUIDED pauses it; returning resumes at the same goal.
+```bash
+ros2 service call /fast_planner/start_mission std_srvs/srv/Trigger   # restart from goal 1
+ros2 service call /fast_planner/cancel std_srvs/srv/Trigger          # stop mission, hold
+ros2 topic echo /fast_planner/status                                 # ... | mission 2/3 | ...
+```
+Test: `g++ -O2 -std=c++17 -Itest/mock -Iinclude -I/usr/include/eigen3 test/test_mission_sim.cpp -lnlopt -o msim && ./msim`
+
 Per plan (`include/da3_metric_scale/`, ROS-free and unit-tested):
 1. **Kinodynamic A*** (`kino_astar.hpp`): double integrator, (2r+1)³ primitives, J = ∫|u|² + ρT,
    closed-form heuristic, analytic expansion. A node is free if ESDF > `clearance` and inside the fence.

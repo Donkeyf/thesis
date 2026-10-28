@@ -98,6 +98,25 @@ template<class T> struct Subscription {
   std::string topic; std::function<void(std::shared_ptr<const T>)> cb;
   void inject(const T & m) {cb(std::make_shared<const T>(m));}
 };
+// service clients: requests go to a handler registered by the test (g_service_handlers)
+inline std::map<std::string, std::function<std::shared_ptr<void>(std::shared_ptr<void>)>> g_service_handlers;
+template<class S> struct Client {
+  using SharedPtr = std::shared_ptr<Client<S>>;
+  struct SharedFuture {
+    std::shared_ptr<typename S::Response> r;
+    std::shared_ptr<typename S::Response> get() const {return r;}
+  };
+  std::string name;
+  int calls{0};
+  bool service_is_ready() const {return g_service_handlers.count(name) > 0;}
+  template<class F> void async_send_request(std::shared_ptr<typename S::Request> req, F && cb) {
+    ++calls;
+    auto it = g_service_handlers.find(name);
+    if (it == g_service_handlers.end()) {return;}
+    SharedFuture f{std::static_pointer_cast<typename S::Response>(it->second(req))};
+    cb(f);
+  }
+};
 template<class S> struct Service {
   using SharedPtr = std::shared_ptr<Service<S>>;
   std::function<void(std::shared_ptr<typename S::Request>, std::shared_ptr<typename S::Response>)> cb;
@@ -119,6 +138,8 @@ public:
     auto s = std::make_shared<Subscription<T>>(); s->topic = t; s->cb = f; subs[t] = s; return s;}
   template<class T, class F> typename Subscription<T>::SharedPtr create_subscription(
     const std::string & t, int d, F && f) {return create_subscription<T>(t, QoS(d), std::forward<F>(f));}
+  template<class S> typename Client<S>::SharedPtr create_client(const std::string & n) {
+    auto c = std::make_shared<Client<S>>(); c->name = n; clients[n] = c; return c;}
   template<class S, class F> typename Service<S>::SharedPtr create_service(const std::string & n, F && f) {
     auto s = std::make_shared<Service<S>>(); s->cb = f; srvs[n] = s; return s;}
   CallbackGroup::SharedPtr create_callback_group(CallbackGroupType) {return std::make_shared<CallbackGroup>();}
@@ -140,7 +161,7 @@ public:
     }
     g_now = t_end;
   }
-  std::map<std::string, std::shared_ptr<void>> pubs, subs, srvs;
+  std::map<std::string, std::shared_ptr<void>> pubs, subs, srvs, clients;
   std::vector<TimerBase::SharedPtr> timers;
   std::string name_;
 };

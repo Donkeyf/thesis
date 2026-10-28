@@ -68,8 +68,9 @@ def generate_launch_description():
             namespace=LaunchConfiguration('mavros_namespace'),
             output='screen',
             parameters=_mavros_param_files() + [{
-                'fcu_url': LaunchConfiguration('fcu_url'),
-                'gcs_url': LaunchConfiguration('gcs_url'),
+                # str: launch parses values as YAML, and '/dev/ttyACM0:' would become a dict
+                'fcu_url': ParameterValue(LaunchConfiguration('fcu_url'), value_type=str),
+                'gcs_url': ParameterValue(LaunchConfiguration('gcs_url'), value_type=str),
                 'tgt_system': ParameterValue(LaunchConfiguration('tgt_system'), value_type=int),
                 'tgt_component': ParameterValue(LaunchConfiguration('tgt_component'),
                                                 value_type=int),
