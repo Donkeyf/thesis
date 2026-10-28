@@ -143,8 +143,12 @@ Per plan (`include/da3_metric_scale/`, ROS-free and unit-tested):
 5. **Check**: dense ESDF check (> `check_clearance`). If the optimised curve fails, the plain
    A* fit is tried, otherwise the plan is rejected.
 
-Replanning: every `replan_period` from the active trajectory at now + lookahead (receding
-horizon), immediately when a new ESDF shows the remaining trajectory in collision, and an
+Replanning: every `replan_period` (3 s) from the active trajectory at now + lookahead (receding
+horizon). The start state accounts for the real vehicle (`replan_start: auto`): while the drone
+tracks the reference within `replan_vel_mismatch` / `replan_pos_mismatch` the new plan continues
+the reference (smooth), otherwise it starts from the measured pose + velocity predicted over the
+lookahead (`velocity_local`, or differentiated pose if that stream is missing). Plans stay
+`fence_margin` (0.1 m) inside the fence, which is shared with the tracker. Replans happen also immediately when a new ESDF shows the remaining trajectory in collision, and an
 **emergency hold** when that collision is less than `emergency_time` away, or when the ESDF stops
 arriving. Leaving GUIDED / disarming pauses the planner (goal kept, replans from odom on return).
 The trajectory is republished at 10 Hz (pos, vel, acc, yaw, yaw rate every 50 ms), so the

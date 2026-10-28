@@ -22,14 +22,20 @@ fast_planner:
     tracker_status_topic: /trajectory_tracker/status
     # Groups of 4: x, y, z [m], yaw [deg] in the map (EKF) frame. Empty = no mission.
     # yaw is only used with yaw_mode: goal. CHANGE THESE to points inside your volume.
-
+    mission_goals: [ 1.0,  0.0, 1.0, 0.0,
+                     1.0, -1.0, 1.0, 0.0,
+                     0.0, -1.0, 1.0, 0.0]
+    mission_auto_start: true
+    mission_loop: false
+    mission_hold_time: 1.0              # s at each goal before the next
 
     # ---------------------------------------------------------------- limits (per axis)
-    max_vel: 0.3                        # m/s   (trajectory_tracker clamps at its own max_vel)
+    max_vel: 0.8                        # m/s   (trajectory_tracker clamps at its own max_vel)
     max_acc: 1.0                        # m/s^2
-    use_fence: true                     # keep inside the tracker fence minus a margin
+    use_fence: true                     # same box as trajectory_tracker
     fence_min: [-10.0, -10.0, 0.3]
     fence_max: [ 10.0,  10.0, 1.6]
+    fence_margin: 0.1                   # m, plans stay this far inside the fence (tracker holds at the edge)
 
     # ---------------------------------------------------------------- map
     clearance: 0.3                      # m, A* nodes/primitives need ESDF > clearance
@@ -44,13 +50,14 @@ fast_planner:
       r: 2                              # (2r+1)^3 input primitives per node
       tau: 0.6                          # s primitive duration (0.5*max_acc*tau^2 must exceed the
                                         # resolution, otherwise A* cannot leave the start voxel from rest)
-      rho: 0.3                          # time weight in J = int|u|^2 + rho*T (room scale: ~0.3)
+      rho: 0.5                          # time weight in J = int|u|^2 + rho*T; higher = more direct
+                                        # (too high with low max_vel -> analytic shot rejected, slow search)
       resolution: 0.1                   # m, pruning voxel
       horizon: 5.0                      # m, receding horizon (whole room here)
       goal_tol: 0.15                    # m
       check_dt: 0.05                    # s
       sample_dt: 0.1                    # s
-      lambda_heu: 5.0                   # heuristic inflation (1 = optimal, slower)
+      lambda_heu: 2.0                   # heuristic inflation (1 = optimal, slower; 5 = fast but detours)
       max_nodes: 10000
 
     # ---------------------------------------------------------------- B-spline optimisation (Sec. IV), NLopt
@@ -73,7 +80,11 @@ fast_planner:
     # ---------------------------------------------------------------- replanning / execution
     exec_rate: 20.0                     # Hz FSM
     publish_rate: 10.0                  # Hz trajectory republish (tracker traj_timeout is 0.5 s)
-    replan_period: 1.0                  # s, receding-horizon replanning interval
+    replan_period: 3.0                  # s, receding-horizon replanning interval
+    replan_start: auto                  # auto | measured | reference: replan from the reference while
+                                        # the drone tracks it, else from its measured pose + velocity
+    replan_vel_mismatch: 0.25           # m/s, auto: measured vs reference velocity -> use measured
+    replan_pos_mismatch: 0.20           # m,   auto: measured vs reference position -> use measured
     replan_lookahead: 0.15              # s, new plan starts here on the active one (auto-grows with plan time)
     no_replan_near_goal: 1.0            # s, skip periodic replans in the last second
     collision_check_horizon: 3.0        # s of the active trajectory checked on every new ESDF

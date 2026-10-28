@@ -41,7 +41,7 @@ da3_metric_scaler:
     method: floor                          # floor | triangulation | both  (floor only until mocap time offset is calibrated)
     da3_is_disparity: false                # true if DA3 outputs inverse depth / disparity
     fit_shift: false                       # true for affine (relative) DA3 models
-    ema_alpha: 1.0                         # 1.0 = per-frame scale (relative DA3: scale changes every frame); <1 smooths
+    ema_alpha: 0.3                         # scale smoothing: 1.0 = per-frame (noisy map), 0.3 = steadier map, slight lag
     min_depth: 0.1
     max_depth: 10.0
 

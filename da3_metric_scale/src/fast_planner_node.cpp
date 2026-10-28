@@ -167,6 +167,12 @@ public:
     max_yaw_rate_ = declare_parameter<double>("max_yaw_rate_deg", 45.0) * M_PI / 180.0;
     default_goal_z_ = declare_parameter<double>("default_goal_z", 1.0);
     hold_after_goal_ = declare_parameter<bool>("hold_after_goal", true);
+    // replan start state: "auto" = continue the reference trajectory while the vehicle tracks it,
+    // switch to the measured state (pose + velocity, predicted over the lookahead) when it doesn't;
+    // "measured" = always the measured state; "reference" = always the reference (old behaviour)
+    replan_start_ = declare_parameter<std::string>("replan_start", "auto");
+    vel_mismatch_ = declare_parameter<double>("replan_vel_mismatch", 0.25);
+    pos_mismatch_ = declare_parameter<double>("replan_pos_mismatch", 0.20);
     // GUIDED automation: enable the tracker and run the mission when the FC enters GUIDED
     auto_enable_tracker_ = declare_parameter<bool>("auto_enable_tracker", true);
     const std::string enable_srv =
@@ -221,8 +227,11 @@ public:
     if (fmin.size() != 3 || fmax.size() != 3) {
       throw std::invalid_argument("fence_min / fence_max need 3 values");
     }
-    P.fence_min = V3(fmin[0], fmin[1], fmin[2]);
-    P.fence_max = V3(fmax[0], fmax[1], fmax[2]);
+    // plan slightly inside the configured box: the optimiser treats the fence as a soft limit and
+    // trajectory_tracker holds as soon as its reference leaves the (identical) tracker fence
+    const double fence_margin = declare_parameter<double>("fence_margin", 0.1);
+    P.fence_min = V3(fmin[0], fmin[1], fmin[2]) + V3::Constant(fence_margin);
+    P.fence_max = V3(fmax[0], fmax[1], fmax[2]) - V3::Constant(fence_margin);
     core_ = std::make_unique<FastPlannerCore>(P);
     // RAPTOR Sec. VI risk-aware refinement
     P.risk.enable = declare_parameter<bool>("risk.enable", kRiskDefault);
@@ -257,8 +266,20 @@ public:
     pose_sub_ = create_subscription<PoseStamped>(
       prefix_ + "/local_position/pose", sqos,
       [this](PoseStamped::ConstSharedPtr m) {
+        const rclcpp::Time tn = now();
+        const V3 p(m->pose.position.x, m->pose.position.y, m->pose.position.z);
+        if (last_pose_.nanoseconds() > 0) {
+          const double dt = (tn - last_pose_).seconds();
+          if (dt > 0.005 && dt < 0.5) {
+            const V3 v = (p - odomPos()) / dt;
+            vel_fd_ = fd_valid_ ? V3(0.6 * vel_fd_ + 0.4 * v) : v;   // light low-pass
+            fd_valid_ = true;
+          } else if (dt >= 0.5) {
+            fd_valid_ = false;
+          }
+        }
         pose_ = *m;
-        last_pose_ = now();
+        last_pose_ = tn;
       });
     vel_sub_ = create_subscription<geometry_msgs::msg::TwistStamped>(
       prefix_ + "/local_position/velocity_local", sqos,
@@ -525,9 +546,19 @@ private:
   {
     return V3(pose_.pose.position.x, pose_.pose.position.y, pose_.pose.position.z);
   }
-  V3 odomVel() const
+  // measured velocity: MAVROS velocity_local, else differentiated pose (never silently zero
+  // while the vehicle is moving)
+  V3 odomVel()
   {
-    return (now() - last_vel_).seconds() < pose_timeout_ ? vel_ : V3::Zero();
+    if (last_vel_.nanoseconds() > 0 && (now() - last_vel_).seconds() < pose_timeout_) {
+      return vel_;
+    }
+    if (fd_valid_ && poseFresh()) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
+        "no velocity_local - using differentiated pose (set SR0_POSITION / stream rate)");
+      return vel_fd_;
+    }
+    return V3::Zero();
   }
 
   // ---------------------------------------------------------------- FSM
@@ -638,8 +669,23 @@ private:
     // start the new trajectory far enough ahead that it is ready before the vehicle gets there
     const double lookahead = std::min(1.0, std::max(replan_lookahead_, 1.5 * plan_time_ema_));
     const double ts = t + lookahead;
-    const Sample s = active_->sample(ts);
-    const bool ok = planFrom(ts, s.p, s.v, s.a, s.yaw, active_, reason);
+    Sample s = active_->sample(ts);
+    // take the vehicle's actual motion into account: if it is not where / not as fast as the
+    // reference says, start from the measured state predicted to ts
+    std::string start = "ref";
+    if (replan_start_ != "reference") {
+      const V3 vm = odomVel();
+      const V3 pm = odomPos() + vm * lookahead;
+      if (replan_start_ == "measured" || (vm - s.v).norm() > vel_mismatch_ ||
+        (pm - s.p).norm() > pos_mismatch_)
+      {
+        s.p = pm;
+        s.v = vm;
+        s.a = V3::Zero();
+        start = "measured";
+      }
+    }
+    const bool ok = planFrom(ts, s.p, s.v, s.a, s.yaw, active_, reason + ", start " + start);
     if (!ok && reason == "collision ahead") {
       // keep flying the old one only while the collision is far enough away
       const double tau = t - active_->t0;
@@ -905,6 +951,10 @@ private:
   PoseStamped pose_;
   V3 vel_{V3::Zero()};
   rclcpp::Time last_pose_{0, 0, RCL_ROS_TIME}, last_vel_{0, 0, RCL_ROS_TIME};
+  V3 vel_fd_{V3::Zero()};
+  bool fd_valid_{false};
+  std::string replan_start_{"auto"};
+  double vel_mismatch_{0.25}, pos_mismatch_{0.20};
   mavros_msgs::msg::State fc_;
   rclcpp::Time last_fc_{0, 0, RCL_ROS_TIME};
 
