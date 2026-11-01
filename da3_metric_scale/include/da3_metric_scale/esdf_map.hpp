@@ -41,6 +41,27 @@ public:
   const Eigen::Vector3d & origin() const {return origin_;}
   Eigen::Vector3i size() const {return {nx_, ny_, nz_};}
 
+  // Raw voxel access (no unknown handling) for ray casting / information gain
+  bool inside(int ix, int iy, int iz) const
+  {
+    return ix >= 0 && iy >= 0 && iz >= 0 && ix < nx_ && iy < ny_ && iz < nz_;
+  }
+  float raw(int ix, int iy, int iz) const
+  {
+    return d_[(static_cast<size_t>(ix) * ny_ + iy) * nz_ + iz];
+  }
+  bool unobserved(float v) const {return std::fabs(v - unobs_) < 1e-2f;}
+  Eigen::Vector3i index(const Eigen::Vector3d & p) const
+  {
+    const Eigen::Vector3d q = (p - origin_) / vs_;
+    return {static_cast<int>(std::floor(q.x())), static_cast<int>(std::floor(q.y())),
+      static_cast<int>(std::floor(q.z()))};
+  }
+  Eigen::Vector3d center(int ix, int iy, int iz) const
+  {
+    return origin_ + vs_ * Eigen::Vector3d(ix + 0.5, iy + 0.5, iz + 0.5);
+  }
+
   // Value at voxel index (unknown handling applied)
   double voxel(int ix, int iy, int iz) const
   {

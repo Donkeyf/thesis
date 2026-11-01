@@ -299,7 +299,7 @@ private:
 
     RefState r = traj_.sample(now().seconds() + lookahead_);
     if (!inFence(r.p)) {
-      holdAt(cur, cur_yaw, "reference outside fence");
+      holdAt(cur, cur_yaw, "reference outside fence (ref z " + std::to_string(r.p.z) + ", vehicle z " + std::to_string(cur.z) + ")");
       return;
     }
     if ((r.p - cur).norm() > max_err_) {
@@ -339,6 +339,9 @@ private:
       hold_->p = cur;
       hold_->yaw = have_cmd_yaw_ ? last_cmd_yaw_ : cur_yaw;
       RCLCPP_WARN(get_logger(), "holding position: %s", why.c_str());
+    } else if (why.rfind(hold_status_.substr(0, 20), 0) != 0) {
+      // already holding, but for a new reason (e.g. "no trajectory yet" -> "outside fence")
+      RCLCPP_WARN(get_logger(), "still holding position: %s", why.c_str());
     }
     hold_status_ = why;
     send(*hold_, false);

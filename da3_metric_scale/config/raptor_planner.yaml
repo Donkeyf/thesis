@@ -22,9 +22,7 @@ raptor_planner:
     tracker_status_topic: /trajectory_tracker/status
     # Groups of 4: x, y, z [m], yaw [deg] in the map (EKF) frame. Empty = no mission.
     # yaw is only used with yaw_mode: goal. CHANGE THESE to points inside your volume.
-    mission_goals: [ 1.0,  0.0, 1.0, 0.0,
-                     1.0, -1.0, 1.0, 0.0,
-                     0.0, -1.0, 1.0, 0.0]
+    mission_goals: [-1.8, -8.7, 0.5, 0.0]
     mission_auto_start: true
     mission_loop: false
     mission_hold_time: 1.0              # s at each goal before the next
@@ -32,9 +30,10 @@ raptor_planner:
     # ---------------------------------------------------------------- limits (per axis)
     max_vel: 0.8                        # m/s   (trajectory_tracker clamps at its own max_vel)
     max_acc: 1.0                        # m/s^2
-    use_fence: true                     # keep inside the tracker fence minus a margin
-    fence_min: [-1.8, -1.8, 0.5]
-    fence_max: [ 1.8,  1.8, 1.6]
+    use_fence: true                     # same box as trajectory_tracker
+    fence_min: [-10.0, -10.0, 0.3]
+    fence_max: [ 10.0,  10.0, 1.6]
+    fence_margin: 0.1                   # m, plans stay this far inside the fence (tracker holds at the edge)
 
     # ---------------------------------------------------------------- map
     clearance: 0.3                      # m, A* nodes/primitives need ESDF > clearance
@@ -49,13 +48,14 @@ raptor_planner:
       r: 2                              # (2r+1)^3 input primitives per node
       tau: 0.6                          # s primitive duration (0.5*max_acc*tau^2 must exceed the
                                         # resolution, otherwise A* cannot leave the start voxel from rest)
-      rho: 0.3                          # time weight in J = int|u|^2 + rho*T (room scale: ~0.3)
+      rho: 0.5                          # time weight in J = int|u|^2 + rho*T; higher = more direct
+                                        # (too high with low max_vel -> analytic shot rejected, slow search)
       resolution: 0.1                   # m, pruning voxel
       horizon: 5.0                      # m, receding horizon (whole room here)
       goal_tol: 0.15                    # m
       check_dt: 0.05                    # s
       sample_dt: 0.1                    # s
-      lambda_heu: 5.0                   # heuristic inflation (1 = optimal, slower)
+      lambda_heu: 2.0                   # heuristic inflation (1 = optimal, slower; 5 = fast but detours)
       max_nodes: 10000
 
     # ---------------------------------------------------------------- B-spline optimisation (Sec. IV), NLopt
@@ -95,7 +95,11 @@ raptor_planner:
     # ---------------------------------------------------------------- replanning / execution
     exec_rate: 20.0                     # Hz FSM
     publish_rate: 10.0                  # Hz trajectory republish (tracker traj_timeout is 0.5 s)
-    replan_period: 1.0                  # s, receding-horizon replanning interval
+    replan_period: 3.0                  # s, receding-horizon replanning interval
+    replan_start: auto                  # auto | measured | reference: replan from the reference while
+                                        # the drone tracks it, else from its measured pose + velocity
+    replan_vel_mismatch: 0.25           # m/s, auto: measured vs reference velocity -> use measured
+    replan_pos_mismatch: 0.20           # m,   auto: measured vs reference position -> use measured
     replan_lookahead: 0.15              # s, new plan starts here on the active one (auto-grows with plan time)
     no_replan_near_goal: 1.0            # s, skip periodic replans in the last second
     collision_check_horizon: 3.0        # s of the active trajectory checked on every new ESDF
@@ -108,6 +112,54 @@ raptor_planner:
     hold_after_goal: true               # keep publishing a hold at the goal
 
     # ---------------------------------------------------------------- yaw
-    yaw_mode: velocity                  # velocity (camera looks where it flies) | goal | hold
+    # perception: RAPTOR Sec. VII yaw planning (graph search over yaw angles along the trajectory,
+    #             maximising information gain of visible unknown space near the path, then a
+    #             smooth B-spline fit) + keeping good features (feature_map landmarks) in view.
+    #             Falls back to velocity yaw if the planner fails.
+    # velocity: camera looks where it flies | goal | hold
+    yaw_mode: perception
     yaw_min_speed: 0.2                  # m/s, below this keep the current yaw
     max_yaw_rate_deg: 45.0
+    landmarks_topic: /feature_map/landmarks
+    yaw:
+      # camera (undistorted 640x480, fx 550 -> ~60 x 47 deg)
+      hfov_deg: 60.0
+      vfov_deg: 47.0
+      cam_pitch_deg: 0.0                # optical axis above (+) / below (-) horizontal
+      min_range: 0.3                    # m
+      max_range: 4.0                    # m, = nvblox integration range
+      # A. graph search (Eq. 15)
+      key_dt: 0.5                       # s between yaw layers
+      horizon: 5.0                      # s of trajectory with planned yaw (held after)
+      num_yaw: 36                       # candidate angles per layer (10 deg apart)
+      mu: 1.0                           # smoothness weight [1/rad^2]
+      max_yaw_acc_deg: 90.0             # deg/s^2 (B-spline feasibility)
+      # information gain (Eq. 16): visible unknown voxels in the FOV, weighted by
+      # exp(-w_lat * lateral distance - w_lon * distance along the path ahead)
+      ig_weight: 1.0
+      ig_stride: 0.2                    # m, voxel sub-sampling (bigger = faster, coarser)
+      w_lat: 1.0                        # 1/m
+      w_lon: 0.3                        # 1/m
+      behind_tol: 0.3                   # m, unknown space already flown past does not count
+      # features (keep good landmarks in view / trackable between yaw layers)
+      feat_weight: 0.5                  # penalty when < feat_desired landmark quality in view
+      feat_desired: 20.0
+      covis_weight: 0.5                 # penalty when < covis_desired landmarks shared by consecutive views
+      covis_desired: 10.0
+      feat_margin_deg: 5.0              # landmarks must be this far inside the image edge
+      feat_max_range: 4.0               # m
+      feat_occlusion: true              # ray-cast landmarks against the ESDF
+      landmarks_timeout: 5.0            # s, older landmark messages are ignored
+      # mild preference to look along the velocity (safety: see what you fly into)
+      vel_weight: 0.2
+      # cap on looking away from the flight direction (single forward camera: obstacles ahead are
+      # only mapped while the path is near the image). 30 = path always inside the 60 deg image,
+      # 45 = path at most 15 deg outside it, 0 = off (pure RAPTOR, may look 90 deg sideways)
+      max_vel_offset_deg: 45.0
+      offset_weight: 10.0               # [1/rad^2] for the excess
+      # B. B-spline optimisation (Eq. 17)
+      ctrl_dt: 0.25                     # s, knot span
+      w_smooth: 1.0                     # jerk
+      gamma1: 100.0                     # waypoints
+      gamma2: 1000.0                    # yaw rate / acceleration limits
+      w_end: 10.0                       # soft zero yaw rate at the end of the yaw plan

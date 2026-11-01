@@ -2,6 +2,7 @@
 // compiled and run closed-loop in a plain C++ test (no ROS install). Test-only.
 #pragma once
 #include <any>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -13,7 +14,8 @@
 #include <vector>
 
 namespace builtin_interfaces::msg {
-struct Time {int32_t sec{0}; uint32_t nanosec{0};};
+struct Time {int32_t sec{0}; uint32_t nanosec{0};
+  bool operator==(const Time & o) const {return sec == o.sec && nanosec == o.nanosec;}};
 struct Duration {int32_t sec{0}; uint32_t nanosec{0};};
 }
 #define MOCK_MSG(T) using SharedPtr = std::shared_ptr<T>; using ConstSharedPtr = std::shared_ptr<const T>;
@@ -54,6 +56,30 @@ struct MultiDOFJointTrajectory {
   std::vector<MultiDOFJointTrajectoryPoint> points; MOCK_MSG(MultiDOFJointTrajectory)
 };
 }
+namespace geometry_msgs::msg {
+struct TransformStamped {std_msgs::msg::Header header; std::string child_frame_id; Transform transform;};
+}
+namespace sensor_msgs::msg {
+struct PointField {
+  static constexpr uint8_t INT8 = 1, UINT8 = 2, INT16 = 3, UINT16 = 4, INT32 = 5, UINT32 = 6,
+    FLOAT32 = 7, FLOAT64 = 8;
+  std::string name; uint32_t offset{0}; uint8_t datatype{0}; uint32_t count{0};
+};
+struct PointCloud2 {
+  std_msgs::msg::Header header; uint32_t height{0}, width{0}; std::vector<PointField> fields;
+  bool is_bigendian{false}; uint32_t point_step{0}, row_step{0}; std::vector<uint8_t> data;
+  bool is_dense{false}; MOCK_MSG(PointCloud2)
+};
+struct Image {
+  std_msgs::msg::Header header; uint32_t height{0}, width{0}; std::string encoding;
+  uint8_t is_bigendian{0}; uint32_t step{0}; std::vector<uint8_t> data; MOCK_MSG(Image)
+};
+struct CameraInfo {
+  std_msgs::msg::Header header; uint32_t height{0}, width{0}; std::string distortion_model;
+  std::vector<double> d; std::array<double, 9> k{}, r{}; std::array<double, 12> p{};
+  MOCK_MSG(CameraInfo)
+};
+}
 namespace da3_metric_scale::msg {
 struct EsdfGrid {
   std_msgs::msg::Header header; geometry_msgs::msg::Point origin; float voxel_size_m{0};
@@ -67,11 +93,13 @@ namespace rclcpp {
 inline double g_now = 1000.0;               // simulated clock [s]
 inline bool g_quiet = false;
 inline std::map<std::string, std::any> g_params;
-struct Duration {double s; double seconds() const {return s;}};
+struct Duration {double s; double seconds() const {return s;}
+  static Duration from_seconds(double x) {return {x};}};
 struct Time {
   int64_t ns{0};
   Time() = default;
   Time(int32_t sec, uint32_t nsec, int = 0) : ns(int64_t(sec) * 1000000000LL + nsec) {}
+  Time(const builtin_interfaces::msg::Time & t) : ns(int64_t(t.sec) * 1000000000LL + t.nanosec) {}
   static Time fromSec(double s) {Time t; t.ns = int64_t(std::llround(s * 1e9)); return t;}
   int64_t nanoseconds() const {return ns;}
   double seconds() const {return ns * 1e-9;}
@@ -150,6 +178,7 @@ public:
     t->period = std::chrono::duration<double>(period).count(); t->next = g_now + t->period; t->cb = f;
     timers.push_back(t); return t;}
   Time now() const {return Time::fromSec(g_now);}
+  const char * get_fully_qualified_name() const {return name_.c_str();}
   int get_logger() const {return 0;}
   std::shared_ptr<int> get_clock() const {return std::make_shared<int>(0);}
   void spinUntil(double t_end) {         // run due timers in time order
@@ -184,3 +213,4 @@ template<class N> void spin(N) {}
 #define RCLCPP_INFO_THROTTLE(l, c, ms, fmt, ...) do { (void)(c); MOCK_LOG("INFO", fmt, ##__VA_ARGS__);} while (0)
 #define RCLCPP_WARN_THROTTLE(l, c, ms, fmt, ...) do { (void)(c); MOCK_LOG("WARN", fmt, ##__VA_ARGS__);} while (0)
 #define RCLCPP_INFO_ONCE(l, fmt, ...) MOCK_LOG("INFO", fmt, ##__VA_ARGS__)
+#define RCLCPP_WARN_ONCE(l, fmt, ...) MOCK_LOG("WARN", fmt, ##__VA_ARGS__)

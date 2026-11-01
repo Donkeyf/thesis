@@ -1,4 +1,5 @@
-"""RAPTOR planner (Fast-Planner + Sec. VI risk-aware refinement) + trajectory tracker -> GUIDED.
+"""RAPTOR planner (Fast-Planner + Sec. VI risk-aware refinement + Sec. VII perception-aware yaw)
++ feature map (good features for the yaw planner) + trajectory tracker -> GUIDED.
 
 Needs the mapping pipeline running (mocap_da3.launch.py: DA3 -> scaler -> nvblox ->
 esdf_publisher) and MAVROS (mocap_to_mavros.launch.py). Then:
@@ -10,8 +11,10 @@ esdf_publisher) and MAVROS (mocap_to_mavros.launch.py). Then:
   ros2 topic pub --once /raptor_planner/goal geometry_msgs/msg/PoseStamped \\
     "{header: {frame_id: map}, pose: {position: {x: 1.0, y: 0.5, z: 1.0}}}"
 
-Args: start_tracker (true), mavros_prefix (/mavros/mavros), planner_params, tracker_params,
-      use_sim_time (false)
+Args: start_tracker (true), start_feature_map (true), mavros_prefix (/mavros/mavros),
+      planner_params, tracker_params, feature_params, use_sim_time (false)
+RViz: /raptor_planner/yaw_plan (Path, Pose Style: Arrows) = planned yaw waypoints,
+      /feature_map/landmarks (PointCloud2, colour by 'score') = landmarks kept in view.
 """
 import os
 
@@ -32,6 +35,9 @@ def generate_launch_description():
                               default_value=os.path.join(share, 'config', 'raptor_planner.yaml')),
         DeclareLaunchArgument('tracker_params',
                               default_value=os.path.join(share, 'config', 'trajectory_tracker.yaml')),
+        DeclareLaunchArgument('feature_params',
+                              default_value=os.path.join(share, 'config', 'feature_map.yaml')),
+        DeclareLaunchArgument('start_feature_map', default_value='true'),
         DeclareLaunchArgument('mavros_prefix', default_value='/mavros/mavros'),
         DeclareLaunchArgument('start_tracker', default_value='true'),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
@@ -43,6 +49,14 @@ def generate_launch_description():
             parameters=[LaunchConfiguration('planner_params'),
                         {'mavros_prefix': prefix, 'use_sim_time': sim,
                          'trajectory_topic': '/trajectory_tracker/trajectory'}],
+        ),
+        Node(
+            package='da3_metric_scale',
+            executable='feature_map',
+            name='feature_map',
+            output='screen',
+            condition=IfCondition(LaunchConfiguration('start_feature_map')),
+            parameters=[LaunchConfiguration('feature_params'), {'use_sim_time': sim}],
         ),
         Node(
             package='da3_metric_scale',

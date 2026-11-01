@@ -26,6 +26,7 @@
 // hold when that hit is closer than emergency_time.
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -37,12 +38,14 @@
 #include <mavros_msgs/msg/state.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <trajectory_msgs/msg/multi_dof_joint_trajectory.hpp>
 
 #include "da3_metric_scale/fast_planner_core.hpp"
 #include "da3_metric_scale/msg/esdf_grid.hpp"
+#include "da3_metric_scale/yaw_planner.hpp"
 
 using namespace std::chrono_literals;
 using da3_metric_scale::EsdfMap;
@@ -134,9 +137,11 @@ std::shared_ptr<ActiveTraj> makeHold(const V3 & p, double yaw, double t0)
 #ifdef RAPTOR_NODE
 static constexpr const char * kNodeName = "raptor_planner";
 static constexpr bool kRiskDefault = true;
+static constexpr const char * kYawDefault = "perception";
 #else
 static constexpr const char * kNodeName = "fast_planner";
 static constexpr bool kRiskDefault = false;
+static constexpr const char * kYawDefault = "velocity";
 #endif
 
 class FastPlannerNode : public rclcpp::Node
@@ -162,9 +167,54 @@ public:
     pose_timeout_ = declare_parameter<double>("pose_timeout", 0.5);
     output_dt_ = declare_parameter<double>("output_dt", 0.05);
     output_horizon_ = declare_parameter<double>("output_horizon", 10.0);
-    yaw_mode_ = declare_parameter<std::string>("yaw_mode", "velocity");  // velocity|goal|hold
+    // velocity | goal | hold | perception (RAPTOR Sec. VII yaw planning + feature visibility)
+    yaw_mode_ = declare_parameter<std::string>("yaw_mode", kYawDefault);
     yaw_min_speed_ = declare_parameter<double>("yaw_min_speed", 0.2);
     max_yaw_rate_ = declare_parameter<double>("max_yaw_rate_deg", 45.0) * M_PI / 180.0;
+    {
+      constexpr double D = M_PI / 180.0;
+      auto & Y = yaw_planner_.params();
+      Y.max_yaw_rate = max_yaw_rate_;
+      Y.vel_min_speed = yaw_min_speed_;
+      Y.hfov = declare_parameter<double>("yaw.hfov_deg", 60.0) * D;
+      Y.vfov = declare_parameter<double>("yaw.vfov_deg", 47.0) * D;
+      Y.cam_pitch = declare_parameter<double>("yaw.cam_pitch_deg", 0.0) * D;
+      Y.min_range = declare_parameter<double>("yaw.min_range", 0.3);
+      Y.max_range = declare_parameter<double>("yaw.max_range", 4.0);
+      Y.key_dt = declare_parameter<double>("yaw.key_dt", 0.5);
+      Y.horizon = declare_parameter<double>("yaw.horizon", 5.0);
+      Y.num_yaw = declare_parameter<int>("yaw.num_yaw", 36);
+      Y.mu = declare_parameter<double>("yaw.mu", 1.0);
+      Y.max_yaw_acc = declare_parameter<double>("yaw.max_yaw_acc_deg", 90.0) * D;
+      Y.ig_weight = declare_parameter<double>("yaw.ig_weight", 1.0);
+      Y.ig_stride = declare_parameter<double>("yaw.ig_stride", 0.2);
+      Y.w_lat = declare_parameter<double>("yaw.w_lat", 1.0);
+      Y.w_lon = declare_parameter<double>("yaw.w_lon", 0.3);
+      Y.behind_tol = declare_parameter<double>("yaw.behind_tol", 0.3);
+      Y.feat_weight = declare_parameter<double>("yaw.feat_weight", 0.5);
+      Y.feat_desired = declare_parameter<double>("yaw.feat_desired", 20.0);
+      Y.covis_weight = declare_parameter<double>("yaw.covis_weight", 0.5);
+      Y.covis_desired = declare_parameter<double>("yaw.covis_desired", 10.0);
+      Y.feat_margin = declare_parameter<double>("yaw.feat_margin_deg", 5.0) * D;
+      Y.feat_max_range = declare_parameter<double>("yaw.feat_max_range", 4.0);
+      Y.feat_occlusion = declare_parameter<bool>("yaw.feat_occlusion", true);
+      Y.vel_weight = declare_parameter<double>("yaw.vel_weight", 0.2);
+      Y.max_vel_offset = declare_parameter<double>("yaw.max_vel_offset_deg", 0.0) * D;
+      Y.offset_weight = declare_parameter<double>("yaw.offset_weight", 10.0);
+      Y.ctrl_dt = declare_parameter<double>("yaw.ctrl_dt", 0.25);
+      Y.w_smooth = declare_parameter<double>("yaw.w_smooth", 1.0);
+      Y.gamma1 = declare_parameter<double>("yaw.gamma1", 100.0);
+      Y.gamma2 = declare_parameter<double>("yaw.gamma2", 1000.0);
+      Y.w_end = declare_parameter<double>("yaw.w_end", 10.0);
+      landmarks_timeout_ = declare_parameter<double>("yaw.landmarks_timeout", 5.0);
+    }
+    if (yaw_mode_ != "velocity" && yaw_mode_ != "goal" && yaw_mode_ != "hold" &&
+      yaw_mode_ != "perception")
+    {
+      throw std::invalid_argument("yaw_mode must be velocity, goal, hold or perception");
+    }
+    const auto landmarks_topic =
+      declare_parameter<std::string>("landmarks_topic", "/feature_map/landmarks");
     default_goal_z_ = declare_parameter<double>("default_goal_z", 1.0);
     hold_after_goal_ = declare_parameter<bool>("hold_after_goal", true);
     // replan start state: "auto" = continue the reference trajectory while the vehicle tracks it,
@@ -296,6 +346,10 @@ public:
       declare_parameter<std::string>("rviz_goal_topic", "/goal_pose"), 10,
       [this](PoseStamped::ConstSharedPtr m) {onGoal(*m, true);});
 
+    landmarks_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
+      landmarks_topic, 1, [this](sensor_msgs::msg::PointCloud2::ConstSharedPtr m) {onLandmarks(*m);});
+    yaw_pub_ = create_publisher<nav_msgs::msg::Path>("~/yaw_plan", 1);
+
     tracker_status_sub_ = create_subscription<std_msgs::msg::String>(
       tracker_status, 10, [this](std_msgs::msg::String::ConstSharedPtr m) {
         tracker_disabled_ = m->data.rfind("DISABLED", 0) == 0;
@@ -344,6 +398,10 @@ public:
         RCLCPP_INFO(get_logger(), "  [%zu] %.2f %.2f %.2f yaw %.0f deg", i, mission_[i].p.x(),
           mission_[i].p.y(), mission_[i].p.z(), mission_[i].yaw * 180.0 / M_PI);
       }
+    } else {
+      RCLCPP_WARN(get_logger(), "no mission_goals loaded - the planner will only fly goals sent to "
+        "~/goal or RViz. If you set mission_goals in the yaml, rebuild + source, or launch with "
+        "planner_params:=<path to your yaml>");
     }
 
     RCLCPP_INFO(
@@ -492,6 +550,12 @@ private:
         mission_.size());
     }
     was_guided_ = guided;
+    if (guided && !has_goal_ && !mission_active_) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "in GUIDED but no goal: %s",
+        mission_.empty() ? "no mission_goals loaded (send ~/goal, or check the yaml in use)" :
+        mission_done_ ? "mission complete (call ~/start_mission to fly it again)" :
+        "mission not running (call ~/start_mission)");
+    }
 
     // the tracker disables itself whenever the FC leaves GUIDED; re-enable it on return
     const bool status_fresh = last_tracker_status_.nanoseconds() > 0 &&
@@ -685,7 +749,8 @@ private:
         start = "measured";
       }
     }
-    const bool ok = planFrom(ts, s.p, s.v, s.a, s.yaw, active_, reason + ", start " + start);
+    const bool ok = planFrom(ts, s.p, s.v, s.a, s.yaw, active_, reason + ", start " + start,
+        start == "measured" ? 0.0 : s.yaw_rate);
     if (!ok && reason == "collision ahead") {
       // keep flying the old one only while the collision is far enough away
       const double tau = t - active_->t0;
@@ -699,7 +764,7 @@ private:
   // plan from a start state; on success the new trajectory becomes active at t_start
   bool planFrom(
     double t_start, const V3 & p, const V3 & v, const V3 & a, double yaw0,
-    std::shared_ptr<const ActiveTraj> prev, const std::string & reason)
+    std::shared_ptr<const ActiveTraj> prev, const std::string & reason, double yaw_rate0 = 0.0)
   {
     last_attempt_ = now().seconds();
     const auto w0 = std::chrono::steady_clock::now();
@@ -736,7 +801,11 @@ private:
     tr->acc = r.acc;
     tr->duration = r.duration;
     tr->to_goal = r.status == kino::Status::REACH_GOAL;
-    buildYaw(*tr, yaw0);
+    const auto wy = std::chrono::steady_clock::now();
+    buildYaw(*tr, yaw0, yaw_rate0);
+    const double dt_yaw =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - wy).count();
+    plan_time_ema_ = std::max(plan_time_ema_, dt_plan + dt_yaw);   // yaw planning delays the start too
     if (prev) {
       // drop the old one's own prefix so the chain never grows
       auto p2 = std::make_shared<ActiveTraj>(*prev);
@@ -765,17 +834,44 @@ private:
     return true;
   }
 
-  void buildYaw(ActiveTraj & tr, double yaw0) const
+  void buildYaw(ActiveTraj & tr, double yaw0, double yaw_rate0 = 0.0)
   {
     tr.yaw_dt = output_dt_;
     const int n = std::max(2, static_cast<int>(std::ceil(tr.duration / tr.yaw_dt)) + 1);
     tr.yaw.resize(n);
+    if (yaw_mode_ == "perception" && have_map_) {
+      da3_metric_scale::YawPlanInput in;
+      in.pos = [&tr](double t) {return tr.pos.at(t);};
+      in.vel = [&tr](double t) {return tr.vel.at(t);};
+      in.duration = tr.duration;
+      in.yaw0 = yaw0;
+      in.yaw_rate0 = std::max(-max_yaw_rate_, std::min(max_yaw_rate_, yaw_rate0));
+      in.map = &map_;
+      const bool lm_fresh = last_landmarks_.nanoseconds() > 0 &&
+        (now() - last_landmarks_).seconds() < landmarks_timeout_;
+      in.landmarks = lm_fresh ? &landmarks_ : nullptr;
+      const auto y = yaw_planner_.plan(in);
+      if (y.ok) {
+        for (int i = 0; i < n; ++i) {tr.yaw[i] = y.yaw(std::min(i * tr.yaw_dt, tr.duration));}
+        publishYaw(tr, y);
+        std::string seq;
+        for (double k : y.key_yaw) {seq += " " + std::to_string(static_cast<int>(std::lround(k * 180 / M_PI)));}
+        RCLCPP_INFO_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "yaw plan:%s deg | %s | IG %.0f feat %.0f search %.0f opt %.1f ms | max rate %.0f deg/s",
+          seq.c_str(), y.message.c_str(), y.t_ig, y.t_feat, y.t_search, y.t_opt,
+          y.max_rate * 180 / M_PI);
+        return;
+      }
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "yaw planner: %s - velocity yaw",
+        y.message.c_str());
+    }
     double y = yaw0;
     const double step = max_yaw_rate_ * tr.yaw_dt;
     for (int i = 0; i < n; ++i) {
       const double tau = std::min(i * tr.yaw_dt, tr.duration);
       double target = y;
-      if (yaw_mode_ == "velocity") {
+      if (yaw_mode_ == "velocity" || yaw_mode_ == "perception") {
         const V3 v = tr.vel.at(tau);
         if (v.head<2>().norm() > yaw_min_speed_) {target = std::atan2(v.y(), v.x());}
       } else if (yaw_mode_ == "goal") {
@@ -787,6 +883,61 @@ private:
       }
       tr.yaw[i] = y;          // continuous (unwrapped) yaw
     }
+  }
+
+  // landmarks from feature_map (x, y, z, score float32)
+  void onLandmarks(const sensor_msgs::msg::PointCloud2 & m)
+  {
+    int ox = -1, oy = -1, oz = -1, os = -1;
+    for (const auto & f : m.fields) {
+      if (f.datatype != sensor_msgs::msg::PointField::FLOAT32) {continue;}
+      if (f.name == "x") {ox = f.offset;}
+      if (f.name == "y") {oy = f.offset;}
+      if (f.name == "z") {oz = f.offset;}
+      if (f.name == "score") {os = f.offset;}
+    }
+    if (ox < 0 || oy < 0 || oz < 0) {return;}
+    if (!m.header.frame_id.empty() && m.header.frame_id != frame_id_) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "landmarks frame '%s' != '%s'",
+        m.header.frame_id.c_str(), frame_id_.c_str());
+      return;
+    }
+    std::vector<da3_metric_scale::Landmark> lm;
+    const size_t n = static_cast<size_t>(m.width) * std::max<uint32_t>(1, m.height);
+    lm.reserve(n);
+    auto rd = [&m](size_t i, int off) {
+        float v;
+        std::memcpy(&v, &m.data[i * m.point_step + off], 4);
+        return static_cast<double>(v);
+      };
+    for (size_t i = 0; i < n && (i + 1) * m.point_step <= m.data.size(); ++i) {
+      da3_metric_scale::Landmark l;
+      l.p = V3(rd(i, ox), rd(i, oy), rd(i, oz));
+      l.score = os >= 0 ? rd(i, os) : 1.0;
+      if (l.p.allFinite()) {lm.push_back(l);}
+    }
+    landmarks_ = std::move(lm);
+    last_landmarks_ = now();
+  }
+
+  // yaw waypoints (graph search) as a Path with orientations: RViz Path, Pose Style "Arrows"
+  void publishYaw(const ActiveTraj & tr, const da3_metric_scale::YawPlanResult & y)
+  {
+    nav_msgs::msg::Path path;
+    path.header.stamp = now();
+    path.header.frame_id = frame_id_;
+    for (size_t i = 0; i < y.key_t.size(); ++i) {
+      PoseStamped q;
+      q.header = path.header;
+      const V3 p = tr.pos.at(std::min(y.key_t[i], tr.duration));
+      q.pose.position.x = p.x();
+      q.pose.position.y = p.y();
+      q.pose.position.z = p.z();
+      q.pose.orientation.z = std::sin(0.5 * y.key_yaw[i]);
+      q.pose.orientation.w = std::cos(0.5 * y.key_yaw[i]);
+      path.poses.push_back(q);
+    }
+    yaw_pub_->publish(path);
   }
 
   void emergency(const std::string & why)
@@ -944,6 +1095,12 @@ private:
   double output_dt_, output_horizon_, yaw_min_speed_, max_yaw_rate_, default_goal_z_;
 
   std::unique_ptr<FastPlannerCore> core_;
+  da3_metric_scale::YawPlanner yaw_planner_;
+  std::vector<da3_metric_scale::Landmark> landmarks_;
+  rclcpp::Time last_landmarks_{0, 0, RCL_ROS_TIME};
+  double landmarks_timeout_{5.0};
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr landmarks_sub_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr yaw_pub_;
   EsdfMap map_;
   bool have_map_{false}, new_map_{false};
   rclcpp::Time last_esdf_{0, 0, RCL_ROS_TIME};

@@ -22,9 +22,7 @@ fast_planner:
     tracker_status_topic: /trajectory_tracker/status
     # Groups of 4: x, y, z [m], yaw [deg] in the map (EKF) frame. Empty = no mission.
     # yaw is only used with yaw_mode: goal. CHANGE THESE to points inside your volume.
-    mission_goals: [ 1.0,  0.0, 1.0, 0.0,
-                     1.0, -1.0, 1.0, 0.0,
-                     0.0, -1.0, 1.0, 0.0]
+    mission_goals: [-1.8, -8.7, 0.5, 0.0]
     mission_auto_start: true
     mission_loop: false
     mission_hold_time: 1.0              # s at each goal before the next

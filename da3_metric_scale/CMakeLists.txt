@@ -92,6 +92,18 @@ target_link_libraries(trajectory_tracker
   ${trajectory_msgs_TARGETS}
   ${mavros_msgs_TARGETS})
 
+# landmarks ("good features") for the perception-aware yaw planner
+add_executable(feature_map src/feature_map_node.cpp)
+target_include_directories(feature_map PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(feature_map
+  rclcpp::rclcpp
+  ${sensor_msgs_TARGETS}
+  ${geometry_msgs_TARGETS}
+  cv_bridge::cv_bridge
+  tf2_ros::tf2_ros
+  ${OpenCV_LIBS}
+  Eigen3::Eigen)
+
 set(EXTRA_TARGETS "")
 if(nvblox_msgs_FOUND)
   add_executable(esdf_publisher src/esdf_publisher.cpp)
@@ -117,6 +129,7 @@ if(NLOPT_TARGET)
     rclcpp::rclcpp
     ${geometry_msgs_TARGETS}
     ${std_msgs_TARGETS}
+    ${sensor_msgs_TARGETS}
     ${nav_msgs_TARGETS}
     ${std_srvs_TARGETS}
     ${trajectory_msgs_TARGETS}
@@ -135,6 +148,7 @@ if(NLOPT_TARGET)
     rclcpp::rclcpp
     ${geometry_msgs_TARGETS}
     ${std_msgs_TARGETS}
+    ${sensor_msgs_TARGETS}
     ${nav_msgs_TARGETS}
     ${std_srvs_TARGETS}
     ${trajectory_msgs_TARGETS}
@@ -148,7 +162,7 @@ else()
   message(WARNING "NLopt not found (sudo apt install libnlopt-cxx-dev): fast_planner / raptor_planner will not be built")
 endif()
 
-install(TARGETS da3_metric_scaler mocap_to_mavros guided_waypoints trajectory_tracker
+install(TARGETS da3_metric_scaler mocap_to_mavros guided_waypoints trajectory_tracker feature_map
   ${EXTRA_TARGETS} DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 

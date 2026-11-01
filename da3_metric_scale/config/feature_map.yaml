@@ -1,0 +1,33 @@
+feature_map:
+  ros__parameters:
+    # inputs (the same image DA3 consumed + the metric depth from da3_metric_scaler, equal stamps)
+    image_topic: /image_da3              # = image_topic of mocap_da3.launch.py
+    depth_topic: /da3_metric/depth
+    depth_info_topic: /da3_metric/camera_info
+    # raw camera intrinsics + distortion: needed because the published metric depth is rectified
+    # (rectify_output: true). Use the same file as da3_metric_scale.yaml.
+    kalibr_file: /workspaces/isaac_ros-dev/src/open_vins/config/custom_mono/kalibr_imucam_chain.yaml
+    kalibr_camera: cam0
+    map_frame: map
+    tf_timeout: 0.05                    # s
+    max_stamp_diff: 0.02                # s, image <-> depth stamp match (images are 0.1 s apart)
+
+    # Shi-Tomasi corners
+    max_corners: 150
+    quality_level: 0.01                 # relative to the strongest corner
+    min_distance_px: 15.0
+    block_size: 3
+    border_px: 10
+
+    # depth checks
+    min_depth: 0.3                      # m
+    max_depth: 4.0                      # m (= nvblox integration range)
+    max_depth_spread: 0.05              # 3x3 depth spread / depth above this = on a depth edge, rejected
+
+    # landmark map
+    landmark_voxel: 0.10                # m, detections within one voxel are the same landmark
+    min_observations: 3                 # re-detections before a landmark is published
+    full_score_observations: 10         # score = mean quality * min(1, n / this)
+    forget_time: 120.0                  # s without re-detection -> dropped
+    max_landmarks: 2000
+    publish_rate: 2.0                   # Hz, ~/landmarks (PointCloud2: x y z score)
