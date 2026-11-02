@@ -224,6 +224,16 @@ public:
     T_body_imu.linear() = R_bi;
     T_body_imu.translation() = Eigen::Vector3d(p_body_imu_v[0], p_body_imu_v[1], p_body_imu_v[2]);
     T_body_cam_ = T_body_imu * T_cam_imu.inverse();
+    // Measured correction of the camera's pitch (rotation about the optical x axis, which points
+    // right; + tilts the optical axis UP, since optical y points down). Applied after the Kalibr
+    // extrinsics, e.g. when a level-target check shows the camera points 2.6 deg lower than the
+    // extrinsics say -> -2.6.
+    const double pitch_corr = declare_parameter<double>("camera_pitch_correction_deg", 0.0) * M_PI / 180.0;
+    if (pitch_corr != 0.0) {
+      T_body_cam_.linear() =
+        T_body_cam_.linear() * Eigen::AngleAxisd(pitch_corr, Eigen::Vector3d::UnitX()).toRotationMatrix();
+      RCLCPP_INFO(get_logger(), "camera pitch correction %+.2f deg applied", pitch_corr * 180.0 / M_PI);
+    }
     world_up_ = Eigen::Vector3d(up_v[0], up_v[1], up_v[2]).normalized();
 
     // ---------------- ROS I/O ----------------

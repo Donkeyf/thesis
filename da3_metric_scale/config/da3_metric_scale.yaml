@@ -33,7 +33,12 @@ da3_metric_scaler:
     R_body_imu: [ 0.0, 1.0, 0.0,
                  -1.0, 0.0, 0.0,
                   0.0, 0.0, 1.0]
-    p_body_imu: [0.0, 0.0, 0.0]            # FC from rigid-body pivot (m), body axes: +x left, -y fwd, +z up
+    # Camera from rigid-body pivot correction, body axes (+x left, -y fwd, +z up). Measured 2026-11-02:
+    # depth node put the lens at 0.173 m with the drone on the floor, tape measure 0.115 m -> -0.058.
+    p_body_imu: [0.0, 0.0, -0.058]
+    # Camera pitch correction after the Kalibr extrinsics (+ = optical axis up). Measured 2026-11-02:
+    # node said +3.1 deg, level-target image check said +0.5 deg -> -2.6.
+    camera_pitch_correction_deg: -2.6
     mocap_time_offset: 0.0                 # s, added to image stamp before pose lookup
     max_pose_gap: 0.1                      # s, max gap between bracketing mocap samples (30 Hz input)
 
